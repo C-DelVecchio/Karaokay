@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\core\Karaokay.Contracts\Karaokay.Contracts.csproj" />
+    <ProjectReference Include="..\..\core\Karaokay.Infrastructure\Karaokay.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Karaokay.IntegrationTests" />
+  </ItemGroup>
+
+</Project>

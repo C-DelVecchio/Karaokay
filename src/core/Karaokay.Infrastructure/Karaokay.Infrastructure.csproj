@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="CliWrap" />
+    <PackageReference Include="Melanchall.DryWetMidi" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Karaokay.Application\Karaokay.Application.csproj" />
+    <ProjectReference Include="..\Karaokay.Contracts\Karaokay.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Karaokay.UnitTests" />
+    <InternalsVisibleTo Include="Karaokay.IntegrationTests" />
+  </ItemGroup>
+
+</Project>

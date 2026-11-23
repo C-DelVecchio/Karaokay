@@ -1,0 +1,521 @@
+{
+  "version": 1,
+  "songId": "synth-spoken-telegram",
+  "source": "Synthetic",
+  "title": "The Spoken Telegram",
+  "artist": "Public Domain Arr. K. Okay",
+  "durationMs": 37500,
+  "ticksPerQuarterNote": 480,
+  "tempoMap": [
+    {
+      "tick": 0,
+      "bpm": 120,
+      "beatMs": 500
+    }
+  ],
+  "initialSilenceMs": 0,
+  "vocalParts": [
+    {
+      "part": "vocals",
+      "isDefaultRenderPart": true,
+      "phrases": [
+        {
+          "startMs": 2000,
+          "endMs": 3500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "at",
+                  "startMs": 2000,
+                  "endMs": 2500,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ten",
+                  "startMs": 2500,
+                  "endMs": 3000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "tion",
+                  "startMs": 3000,
+                  "endMs": 3500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 5500,
+          "endMs": 10500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "ev",
+                  "startMs": 5500,
+                  "endMs": 6000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ery",
+                  "startMs": 6000,
+                  "endMs": 6500,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "one",
+                  "startMs": 6500,
+                  "endMs": 7000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "this",
+                  "startMs": 7000,
+                  "endMs": 7500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "tel",
+                  "startMs": 7500,
+                  "endMs": 8000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "e",
+                  "startMs": 8000,
+                  "endMs": 8500,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "gram",
+                  "startMs": 8500,
+                  "endMs": 9000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "is",
+                  "startMs": 9000,
+                  "endMs": 9500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "for",
+                  "startMs": 9500,
+                  "endMs": 10000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "you",
+                  "startMs": 10000,
+                  "endMs": 10500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 12500,
+          "endMs": 15500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "Please",
+                  "startMs": 12500,
+                  "endMs": 13000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "lis",
+                  "startMs": 13000,
+                  "endMs": 13500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ten",
+                  "startMs": 13500,
+                  "endMs": 14000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "close",
+                  "startMs": 14000,
+                  "endMs": 14500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ly",
+                  "startMs": 14500,
+                  "endMs": 15000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "now",
+                  "startMs": 15000,
+                  "endMs": 15500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 17500,
+          "endMs": 21500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "mes",
+                  "startMs": 17500,
+                  "endMs": 18000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "sage",
+                  "startMs": 18000,
+                  "endMs": 18500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "from",
+                  "startMs": 18500,
+                  "endMs": 19000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "a",
+                  "startMs": 19000,
+                  "endMs": 19500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "far",
+                  "startMs": 19500,
+                  "endMs": 20000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "a",
+                  "startMs": 20000,
+                  "endMs": 20500,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "way",
+                  "startMs": 20500,
+                  "endMs": 21000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "land",
+                  "startMs": 21000,
+                  "endMs": 21500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 23500,
+          "endMs": 28500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "send",
+                  "startMs": 23500,
+                  "endMs": 24000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "your",
+                  "startMs": 24000,
+                  "endMs": 24500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "an",
+                  "startMs": 24500,
+                  "endMs": 25000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "swers",
+                  "startMs": 25000,
+                  "endMs": 25500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "by",
+                  "startMs": 25500,
+                  "endMs": 26000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "tel",
+                  "startMs": 26000,
+                  "endMs": 26500,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "e",
+                  "startMs": 26500,
+                  "endMs": 27000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "graph",
+                  "startMs": 27000,
+                  "endMs": 27500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "to",
+                  "startMs": 27500,
+                  "endMs": 28000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "night",
+                  "startMs": 28000,
+                  "endMs": 28500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 30500,
+          "endMs": 35500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "that",
+                  "startMs": 30500,
+                  "endMs": 31000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "is",
+                  "startMs": 31000,
+                  "endMs": 31500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "all",
+                  "startMs": 31500,
+                  "endMs": 32000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "i",
+                  "startMs": 32000,
+                  "endMs": 32500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "have",
+                  "startMs": 32500,
+                  "endMs": 33000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "to",
+                  "startMs": 33000,
+                  "endMs": 33500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "say",
+                  "startMs": 33500,
+                  "endMs": 34000,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "so",
+                  "startMs": 34000,
+                  "endMs": 34500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "good",
+                  "startMs": 34500,
+                  "endMs": 35000,
+                  "talky": true,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "night",
+                  "startMs": 35000,
+                  "endMs": 35500,
+                  "talky": true,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "fromMs": 0,
+          "toMs": 2000,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 3500,
+          "toMs": 5500,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 10500,
+          "toMs": 12500,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 15500,
+          "toMs": 17500,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 21500,
+          "toMs": 23500,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 28500,
+          "toMs": 30500,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        }
+      ]
+    }
+  ]
+}

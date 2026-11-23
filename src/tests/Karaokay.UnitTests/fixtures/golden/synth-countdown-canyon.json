@@ -1,0 +1,518 @@
+{
+  "version": 1,
+  "songId": "synth-countdown-canyon",
+  "source": "Synthetic",
+  "title": "Countdown Canyon",
+  "artist": "Public Domain Arr. K. Okay",
+  "durationMs": 39500,
+  "ticksPerQuarterNote": 480,
+  "tempoMap": [
+    {
+      "tick": 0,
+      "bpm": 120,
+      "beatMs": 500
+    }
+  ],
+  "initialSilenceMs": 0,
+  "vocalParts": [
+    {
+      "part": "vocals",
+      "isDefaultRenderPart": true,
+      "phrases": [
+        {
+          "startMs": 2000,
+          "endMs": 14000,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "down",
+                  "startMs": 2000,
+                  "endMs": 2500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 2500,
+                  "endMs": 3000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "can",
+                  "startMs": 3000,
+                  "endMs": 3500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "yon",
+                  "startMs": 3500,
+                  "endMs": 4000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "we",
+                  "startMs": 4000,
+                  "endMs": 4500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "go",
+                  "startMs": 4500,
+                  "endMs": 5000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "now",
+                  "startMs": 5000,
+                  "endMs": 5500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "four",
+                  "startMs": 6000,
+                  "endMs": 6500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "beats",
+                  "startMs": 6500,
+                  "endMs": 7000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "un",
+                  "startMs": 7000,
+                  "endMs": 7500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "til",
+                  "startMs": 7500,
+                  "endMs": 8000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 8000,
+                  "endMs": 8500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "next",
+                  "startMs": 8500,
+                  "endMs": 9000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "line",
+                  "startMs": 9000,
+                  "endMs": 9500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "count",
+                  "startMs": 10000,
+                  "endMs": 10500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 10500,
+                  "endMs": 11000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ech",
+                  "startMs": 11000,
+                  "endMs": 11500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "oes",
+                  "startMs": 11500,
+                  "endMs": 12000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "off",
+                  "startMs": 12000,
+                  "endMs": 12500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 12500,
+                  "endMs": 13000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "can",
+                  "startMs": 13000,
+                  "endMs": 13500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "yon",
+                  "startMs": 13500,
+                  "endMs": 14000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 18000,
+          "endMs": 31000,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "ev",
+                  "startMs": 18000,
+                  "endMs": 18500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "ery",
+                  "startMs": 18500,
+                  "endMs": 19000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "beat",
+                  "startMs": 19000,
+                  "endMs": 19500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "is",
+                  "startMs": 19500,
+                  "endMs": 20000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "a",
+                  "startMs": 20000,
+                  "endMs": 20500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "step",
+                  "startMs": 20500,
+                  "endMs": 21000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "to",
+                  "startMs": 21000,
+                  "endMs": 21500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "night",
+                  "startMs": 21500,
+                  "endMs": 22000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "hear",
+                  "startMs": 22500,
+                  "endMs": 23000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 23000,
+                  "endMs": 23500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "riv",
+                  "startMs": 23500,
+                  "endMs": 24000,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "er",
+                  "startMs": 24000,
+                  "endMs": 24500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "an",
+                  "startMs": 24500,
+                  "endMs": 25000,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "swer",
+                  "startMs": 25000,
+                  "endMs": 25500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "back",
+                  "startMs": 25500,
+                  "endMs": 26000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "now",
+                  "startMs": 26000,
+                  "endMs": 26500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            },
+            {
+              "syllables": [
+                {
+                  "text": "one",
+                  "startMs": 27000,
+                  "endMs": 27500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "two",
+                  "startMs": 27500,
+                  "endMs": 28000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "three",
+                  "startMs": 28000,
+                  "endMs": 28500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "four",
+                  "startMs": 28500,
+                  "endMs": 29000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "count",
+                  "startMs": 29000,
+                  "endMs": 29500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "a",
+                  "startMs": 29500,
+                  "endMs": 30000,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "gain",
+                  "startMs": 30000,
+                  "endMs": 30500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "slow",
+                  "startMs": 30500,
+                  "endMs": 31000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "startMs": 34000,
+          "endMs": 37500,
+          "lines": [
+            {
+              "syllables": [
+                {
+                  "text": "down",
+                  "startMs": 34000,
+                  "endMs": 34500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "the",
+                  "startMs": 34500,
+                  "endMs": 35000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "can",
+                  "startMs": 35000,
+                  "endMs": 35500,
+                  "talky": false,
+                  "connectsToNext": true,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "yon",
+                  "startMs": 35500,
+                  "endMs": 36000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "we",
+                  "startMs": 36000,
+                  "endMs": 36500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "go",
+                  "startMs": 36500,
+                  "endMs": 37000,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": false
+                },
+                {
+                  "text": "home",
+                  "startMs": 37000,
+                  "endMs": 37500,
+                  "talky": false,
+                  "connectsToNext": false,
+                  "lineBreakAfter": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "fromMs": 0,
+          "toMs": 2000,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 14000,
+          "toMs": 18000,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        },
+        {
+          "fromMs": 31000,
+          "toMs": 34000,
+          "countdownBeats": 4,
+          "beatMs": 500,
+          "renderCountdown": true
+        }
+      ]
+    }
+  ]
+}

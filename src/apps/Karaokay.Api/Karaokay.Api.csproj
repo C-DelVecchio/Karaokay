@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\core\Karaokay.Application\Karaokay.Application.csproj" />
+    <ProjectReference Include="..\..\core\Karaokay.Contracts\Karaokay.Contracts.csproj" />
+    <ProjectReference Include="..\..\core\Karaokay.Infrastructure\Karaokay.Infrastructure.csproj" />
+    <ProjectReference Include="..\Karaokay.ServiceDefaults\Karaokay.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+</Project>
