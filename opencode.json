@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
+  "small_model": "opencode-go/deepseek-v4.1-flash",
+  "experimental": {
+    "subagent_depth": 1
+  },
+  "agents": {
+    "orchestrator": {
+      "description": "Primary orchestrator. Reads, plans, and verifies only; delegates all coding and exploration to subagents.",
+      "mode": "primary",
+      "model": {
+        "providerID": "opencode-go",
+        "model": "glm-5.3",
+        "variant": "high"
+      },
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "subagent", "resource": "coder", "effect": "allow" },
+        { "action": "subagent", "resource": "general", "effect": "allow" },
+        { "action": "subagent", "resource": "explore", "effect": "allow" }
+      ]
+    },
+    "coder": {
+      "description": "Implements code: project scaffolding, C#/.NET implementation, CLI tools, and tests.",
+      "mode": "subagent",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "steps": 35,
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "allow" },
+        { "action": "shell", "resource": "*", "effect": "allow" }
+      ]
+    },
+    "general": {
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "steps": 30
+    },
+    "explore": {
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "steps": 15
+    }
+  }
+}
