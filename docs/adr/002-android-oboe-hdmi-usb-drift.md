@@ -20,10 +20,9 @@ The flagship party experience runs on an **Onn 4K Pro** Android TV box:
 Two hard problems drive this decision:
 
 1. **Latency.** The Java `AudioRecord`/`AudioTrack` APIs and high-level .NET
-   `MediaElement`-style media paths
-   audio paths typically add 100–300 ms round trip — unusable for singing along. Google's Oboe
-   library (AAudio with OpenSL ES fallback) is the supported way to reach 10–40 ms round trip
-   on capable devices.
+   `MediaElement`-style media paths typically add 100–300 ms round trip — unusable
+   for singing along. Google's Oboe library (AAudio with OpenSL ES fallback) is the
+   supported way to reach 10–40 ms round trip on capable devices.
 
 2. **Clock drift.** The USB ADC and the HDMI DAC run on **independent crystals** with
    ppm-level relative error (~50 ppm is typical → ~2.4 samples/sec at 48 kHz). Over a

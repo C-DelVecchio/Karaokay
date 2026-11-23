@@ -130,13 +130,13 @@ karaokay/
 │   │   ├── Karaokay.Application/       # queue engine, playback authority, room state machine
 │   │   ├── Karaokay.Infrastructure/
 │   │   │   ├── Persistence/ (KaraokayDbContext, configurations, migrations)
-│   │   │   ├── MediaIngest/ (MidiLyricsParser, StemMixer, MediaStore, YouTubeSearchService,
-│   │   │   │                YouTubeDownloadWorker, DownloadJobChannel)
-│   │   │   └── Contracts/ (DTOs shared with clients, lyrics.json types)
+│   │   │   └── MediaIngest/ (MidiLyricsParser, StemMixer, MediaStore, YouTubeSearchService,
+│   │   │                    YouTubeDownloadWorker, DownloadJobChannel)
+│   │   └── Karaokay.Contracts/          # DTOs shared with clients, lyrics.json types
 │   │
 │   ├── tools/
 │   │   ├── Karaokay.Importer/          # CLI: ingest extracted Rock Band folders → library + lyrics.json
-│   │   │   └── (Commands: `scan <root>`, `import <dir>`, `verify <songId>`, `generate-demo`)
+│   │   │   └── (Commands: `scan <root>`, `import <dir>`, `verify <songId>`)
 │   │   └── Karaokay.SyntheticGen/      # deterministic demo song generator (DryWetMidi + FFmpeg)
 │   │
 │   ├── clients/
