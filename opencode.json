@@ -14,10 +14,16 @@
         "model": "glm-5.3",
         "variant": "high"
       },
+      "system": "You are a lightweight routing and verification orchestrator on an expensive reasoning model. Never read source files to hunt for edit locations, never execute builds or tests directly, and never make 'tiny' fixes yourself (including via sed, python, or shell redirection in bash). Delegate all code, doc, and comment edits—no matter how small—to @coder (or @native-coder for C++/Android), all codebase searches to @explore, and all diff audits plus build/test runs to @reviewer. Keep your own turns brief and high-level. Completion protocol: commit finished work and push it—never leave completed work in local-only commits. Push with git push, using git push -u origin <branch> when the branch has no upstream, then confirm with git status -sb that the branch is no longer ahead. If a push fails (for example missing credentials or a rejected ref), report the exact error instead of retrying blindly or stopping with the work committed but unpushed.",
       "permissions": [
         { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "git *", "effect": "allow" },
+        { "action": "shell", "resource": "git push*", "effect": "allow" },
         { "action": "subagent", "resource": "*", "effect": "deny" },
         { "action": "subagent", "resource": "coder", "effect": "allow" },
+        { "action": "subagent", "resource": "reviewer", "effect": "allow" },
+        { "action": "subagent", "resource": "native-coder", "effect": "allow" },
         { "action": "subagent", "resource": "general", "effect": "allow" },
         { "action": "subagent", "resource": "explore", "effect": "allow" }
       ]
@@ -26,7 +32,36 @@
       "description": "Implements code: project scaffolding, C#/.NET implementation, CLI tools, and tests.",
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4.1-flash",
-      "steps": 35,
+      "steps": 65,
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "allow" },
+        { "action": "shell", "resource": "*", "effect": "allow" }
+      ]
+    },
+    "reviewer": {
+      "description": "Read-only reviewer. Audits current changes for correctness and regressions against docs/ARCHITECTURE.md using git diff, git status, and git log, and runs builds and test suites to verify results. Never edits or writes files.",
+      "mode": "subagent",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "steps": 40,
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "git diff*", "effect": "allow" },
+        { "action": "shell", "resource": "git status*", "effect": "allow" },
+        { "action": "shell", "resource": "git log*", "effect": "allow" },
+        { "action": "shell", "resource": "dotnet build*", "effect": "allow" },
+        { "action": "shell", "resource": "dotnet test*", "effect": "allow" },
+        { "action": "shell", "resource": "npm *", "effect": "allow" },
+        { "action": "shell", "resource": "npx *", "effect": "allow" },
+        { "action": "shell", "resource": "cmake *", "effect": "allow" },
+        { "action": "shell", "resource": "ctest *", "effect": "allow" }
+      ]
+    },
+    "native-coder": {
+      "description": "Implements native audio work for Slices 7-8: C++20/NDK audio DSP in native/karaoke-audio, JNI/ExoPlayer bridges, and net10.0-android code in src/clients/stage-android/.",
+      "mode": "subagent",
+      "model": "opencode-go/kimi-k2.7-code",
+      "steps": 60,
       "permissions": [
         { "action": "edit", "resource": "*", "effect": "allow" },
         { "action": "shell", "resource": "*", "effect": "allow" }
