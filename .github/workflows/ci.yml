@@ -33,3 +33,48 @@ jobs:
 
       - name: Test
         run: dotnet test --configuration Release --no-build
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: src/clients/web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: src/clients/web
+        run: npm ci
+
+      - name: Web unit tests (Vitest)
+        working-directory: src/clients/web
+        run: npm test
+
+      - name: Web build
+        working-directory: src/clients/web
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        working-directory: src/clients/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Web end-to-end tests (Playwright)
+        working-directory: src/clients/web
+        run: npm run test:e2e:ci
+
+      - name: Regenerate golden fixtures
+        working-directory: src/clients/web
+        run: npm run fixtures:generate
+
+      - name: Verify golden fixtures are unchanged
+        run: git diff --exit-code -- src/clients/web/fixtures/golden/
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            src/clients/web/playwright-report
+            src/clients/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7

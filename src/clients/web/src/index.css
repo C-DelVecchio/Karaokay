@@ -1,0 +1,129 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  padding: 2rem;
+}
+
+.landing-cta {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.5rem;
+  background: #2f6feb;
+  color: #fff;
+  text-decoration: none;
+}
+
+.stage {
+  position: relative;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+#video-surface {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.stage-canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  max-width: 1280px;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  background: #0b0d12;
+}
+
+.stage-header,
+.stage-countdown,
+.stage-transport,
+.stage-error,
+.stage-complete,
+.demo-picker {
+  position: relative;
+  z-index: 1;
+}
+
+.audio-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 1rem;
+  background: rgb(0 0 0 / 85%);
+}
+
+.audio-gate-error {
+  color: #ff8a8a;
+}
+
+.audio-gate-button {
+  font-size: 1.25rem;
+  padding: 1rem 1.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.track-list {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 40rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.track-button {
+  display: grid;
+  width: 100%;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-title {
+  font-weight: 600;
+}
+
+.track-meta,
+.track-status {
+  opacity: 0.75;
+}
+
+.track-status-error,
+.stage-error {
+  color: #ff8a8a;
+}
+
+.countdown-dots {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.countdown-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.stage-transport {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 24rem;
+  margin-top: 1.5rem;
+}

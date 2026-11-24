@@ -5,12 +5,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Aliased because Karaokay.Importer also generates a global `Program` entry-point class. -->
+    <ProjectReference Include="..\..\apps\Karaokay.Api\Karaokay.Api.csproj" Aliases="ApiHost" />
     <ProjectReference Include="..\..\core\Karaokay.Contracts\Karaokay.Contracts.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Domain\Karaokay.Domain.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Infrastructure\Karaokay.Infrastructure.csproj" />

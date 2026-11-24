@@ -166,7 +166,8 @@ karaokay/
 │       ├── Karaokay.UnitTests/          # domain, midi parser (golden-file tests), room codes
 │       ├── Karaokay.IntegrationTests/   # WebApplicationFactory + Testcontainers (Postgres),
 │       │                                 # SignalR hub integration, yt-dlp worker (mocked binary)
-│       └── Karaokay.ArchitectureTests/  # architecture dependency rules (e.g., Domain has no EF refs)
+│       └── Karaokay.ArchitectureTests/  # hand-written reflection dependency rules
+│                                         # (Assembly.GetReferencedAssemblies) + positive controls
 │
 ├── infra/
 │   ├── docker/ (server.Dockerfile [aspnet + yt-dlp + ffmpeg + deno], docker-compose.yml
@@ -692,7 +693,8 @@ Each slice below specifies files to create, required tests, and a copy-paste
   match YouTube video loudness; `vocals*.ogg` → `vocals.opus`), `MidiFileNameDiscovery.cs`.
 - `tests/UnitTests/MidiLyricsParserGoldenTests.cs` + `fixtures/golden/*.json`;
   `SyntheticGenDeterminismTests` (same seed → byte-identical output hashes);
-  `ArchitectureTests`.
+  `ArchitectureTests` (hand-written `Assembly.GetReferencedAssemblies()` reflection rules with
+  positive controls — see ADR-005).
 
 **Tests required**
 
