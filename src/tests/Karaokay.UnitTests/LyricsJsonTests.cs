@@ -51,7 +51,9 @@ public sealed class LyricsJsonTests
         document.Version = 99;
         document.Title = string.Empty;
 
-        // Phrase 2 starts before phrase 1 and its window overlaps it: both "sorted" and overlap.
+        // Phrase 2's startMs (1000) sorts before phrase 1's (2000); Validate only enforces
+        // startMs ordering, not overlap, so the "sorted by startMs" violation is what this
+        // fixture exercises. The unsorted phrases are still parsed structurally.
         document.VocalParts[0].Phrases =
         [
             CreatePhrase(startMs: 2000, endMs: 3000, text: "later"),

@@ -8,8 +8,8 @@ piece exists**, so you could rebuild or safely change it.
 Read §1–§2 for the shape, §3–§6 for the core transform (MIDI → contract), §7–§9 for the two front
 ends and room codes, §10–§12 for the tests, determinism checklist, and experiments, §13 for what
 follows. Paths are relative to the repo root; line references are from that commit; commands assume
-the repo root. Two tests shell out to `ffmpeg`. On this commit `dotnet test` reports **44 passed**
-(28 unit, 5 integration, 11 architecture).
+the repo root. Two tests shell out to `ffmpeg`. On this commit `dotnet test` reports **45 passed**
+(29 unit, 5 integration, 11 architecture).
 
 ---
 
@@ -121,16 +121,15 @@ not fail `dotnet build`; the compiler/analyzer settings above are what CI enforc
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
-    <PackageVersion Include="NetArchTest.Rules" Version="1.3.2" />
     <PackageVersion Include="Melanchall.DryWetMidi" Version="8.0.3" />
     <PackageVersion Include="CliWrap" Version="3.10.5" />
   </ItemGroup>
 ```
 
 Projects use versionless references (`<PackageReference Include="CliWrap" />`), so "which libraries
-may this layer use" is a one-file question and versions cannot skew. Two honest observations:
-`NetArchTest.Rules 1.3.2` is pinned but **no project references it** (a leftover; §10.7 explains),
-and there is no lock file — reproducibility rests on exact pins.
+may this layer use" is a one-file question and versions cannot skew. One honest observation: there
+is no lock file — reproducibility rests on exact pins. (An unused `NetArchTest.Rules` pin was later
+removed once the architecture rules moved to reflection; §10.7 explains why.)
 
 ### 2.3 The dependency graph is the architecture
 
@@ -325,25 +324,27 @@ GroupPhrasesByGaps(...)`. Markers are not a hint; they are authoritative when pr
 
 ### A source detail worth knowing
 
-`MidiScoreComposer` emits the 106 note-on at the phrase **start** tick, not the end:
+`MidiScoreComposer` emits note-on 105 at the phrase start tick and note-on 106 at the phrase **end**
+tick, so each marker span brackets its syllables exactly:
 
 ```csharp
         foreach (var marker in score.Markers)
         {
             Add(marker.StartTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseStartNote, (SevenBitNumber)(byte)NoteVelocity));
             Add(marker.EndTick, 2, new NoteOffEvent((SevenBitNumber)(byte)PhraseStartNote, (SevenBitNumber)0));
-            Add(marker.StartTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)(byte)NoteVelocity));
+            Add(marker.EndTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)(byte)NoteVelocity));
             Add(marker.EndTick, 2, new NoteOffEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)0));
         }
 ```
 
-The parser closes a span on a **note-on 106**, so in the committed `song.mid` every span is
-zero-length `(start, start)` and phrase extents are rebuilt from syllables. `MidiTestFile.Phrase`
-and the importer fixture put 106 at the **end** tick, the intended encoding. It is an asymmetry in
-the commit, not a doc typo. It is invisible in the demo output because each span is exactly filled by
-its syllables (verified: at tick 1920 the stream is `NoteOn 105`, `NoteOn 106`, `Lyric`,
-`NoteOn 60`). Fixing it would not change a golden byte, but it matters for charts whose phrase tail
-extends past the last syllable.
+The parser closes a span on a **note-on 106**, so the span is now `(phraseStart, phraseEnd)`. This was
+previously emitted at the phrase **start** tick — a real bug this walkthrough originally surfaced.
+Every span was zero-length `(start, start)`, and phrase extents were rebuilt from syllable extents
+alone. `MidiTestFile.Phrase` and the importer fixture always put 106 at the end tick, the intended
+encoding. Regenerating the demos after the fix changed only Twinkle's `song.mid` (the only demo song
+with explicit markers). `lyrics.json` stayed byte-identical for all three songs because the parser
+widened the zero-length spans to their syllables either way, and the audio derives from the score,
+not the MIDI. The fix still matters for charts whose phrase tail extends past the last syllable.
 
 ## 5. `lyrics.json`: the contract
 
@@ -486,8 +487,8 @@ offsetMs`), never to ticks: mixing milliseconds into the tick domain would corru
 ### 6.3 Phrase grouping
 
 Marker spans are sorted, one `Phrase` is created per span, and each syllable joins the **last** span
-whose start is ≤ its start; the window widens to include it. That tolerates sloppy charts and
-explains why zero-length spans still work: the span seeds the start, syllables supply the end.
+whose start is ≤ its start; the window widens to include it. That tolerates sloppy charts and still
+handles legacy zero-length spans: the span seeds the start, syllables supply the end.
 
 The fallback is one pass with a **strict** `>`:
 
@@ -717,10 +718,14 @@ plus click cannot wrap into distortion.
 
 For one ffmpeg/libopus build this makes encoding a pure function of the PCM bytes. The guarantee is
 **scoped to the toolchain**: a different libopus version can legitimately emit different bytes, which
-couples the committed demo assets to the CI image (`ubuntu-latest` may move). Pinning a container or
-ffmpeg build is the fix; not committing the assets would hide the coupling, not remove it. Contrast
-`StemMixer` (§8), which deliberately omits bitexact flags because its output is asserted by
-properties (layout, selection, loudness), not bytes.
+couples the committed demo assets to the CI image (`ubuntu-latest` may move). This is not theoretical:
+CI's ffmpeg 6.x produced different Twinkle `instrumental.opus` bytes than the locally committed files
+from ffmpeg 4.4.2. The tests therefore assert that all 12 files are reproducible across two runs *in
+the same environment*, and compare only the pure-.NET artifacts (`song.mid`, `lyrics.json`) against
+the committed copies; the `.opus` assets are checked for existence and non-emptiness (§10.4). Pinning
+a container or ffmpeg build would make cross-build bytes comparable, but not committing the assets
+would hide the coupling, not remove it. Contrast `StemMixer` (§8), which deliberately omits bitexact
+flags because its output is asserted by properties (layout, selection, loudness), not bytes.
 
 ### 7.6 Writing `lyrics.json` by reading your own output
 
@@ -746,8 +751,9 @@ and writes UTF-8 **without BOM**, because a BOM would add three unexpected bytes
 `SyntheticSongGenerator.GenerateAsync(seed, outDir)` is public so the determinism test calls it
 in-process instead of spawning the CLI. It produces the four files, then hashes each
 (`Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant()`) into a `GeneratedSong`. The CLI
-and the test share everything except argument parsing. Seed 42 reproduces the committed files on this
-commit; a second run reproduces them again.
+and the test share everything except argument parsing. Seed 42 reproduces the committed `song.mid`
+and `lyrics.json`; a second run in the same environment reproduces all 12 files, and the Opus bytes
+are exact only for one ffmpeg/libopus build (§7.5, §10.4).
 
 ## 8. The Importer: a real CLI
 
@@ -841,7 +847,7 @@ Pass 2 substitutes:
         public string ToLoudnormFilter() =>
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"loudnorm=I=-16:TP=-1.5:LRA=11:measured_i={InputI:0.00}" +
+                $"loudnorm=I={LoudnessTargetLufs}:TP=-1.5:LRA=11:measured_i={InputI:0.00}" +
                 $":measured_tp={InputTp:0.00}:measured_lra={InputLra:0.00}" +
                 $":measured_thresh={InputThresh:0.00}:offset={TargetOffset:0.00}:linear=true:print_format=json");
 ```
@@ -861,9 +867,9 @@ ffmpeg falls back to dynamic mode and `offset` compensates; the end-to-end test 
 > multitrack feel equally loud beside a YouTube video. ±1 LU accounts for lossy encoding,
 > measurement windows, and dynamic-mode residue.
 
-One footnote: `LoudnessTargetLufs = -16` is used only by the summary printer; the actual target is the
-literal `I=-16` inside the filter strings, so changing the constant alone would not change
-normalization.
+One footnote: `LoudnessTargetLufs = -16` is the single source of truth. The summary printer reads it,
+and both loudnorm builders interpolate it into the `I=` argument, so changing the constant changes
+the actual normalization target.
 
 ### 8.7 Silent fallback, ffprobe, and `verify`
 
@@ -908,25 +914,24 @@ Four testable choices:
 * **A human alphabet**: no `I`, `O`, `Q` (letters easily misread as digits or as each other), no
   digits, no lowercase.
 
-That last point is where prose and code disagree. ARCHITECTURE.md §4.2 says
-"`ABCDEFGHJKLMNPRSTUVWXYZ` — 24 letters (no `I O Q 0 1`) → 331,776 codes." The string has **23**
-letters (26 − 3), and `24⁴ = 331,776`; `23⁴ = 279,841`. The tests encode the correct arithmetic:
-`AlphabetIsTheDocumentedUnambiguousLetters` asserts the literal and `26 - 3`, and
-`ExhaustedActiveSetThrowsAfterBoundedRetries` builds all `279_841` codes, asserts the count, then
-asserts the generator throws. The literal is authoritative; the prose slipped. The test file's own
-comment still says "24-letter" and one inline comment says `random.Next(24)` — both stale; the code
-uses `Alphabet.Length`, 23.
+The arithmetic is easy to get wrong, so the tests encode it explicitly. The string has **23**
+letters (26 − 3), and `23⁴ = 279,841` possible codes. ARCHITECTURE.md §4.2 originally mis-stated the
+letter and code counts (an arithmetic slip); that prose has now been corrected to 23/279,841, and
+the test file's comments were aligned with it. `AlphabetIsTheDocumentedUnambiguousLetters` asserts
+the literal and `26 - 3`; `ExhaustedActiveSetThrowsAfterBoundedRetries` builds all `279_841` codes,
+asserts the count, then asserts the generator throws. The generator itself always uses
+`Alphabet.Length` (23).
 
 ## 10. The test suite as a safety net
 
-### 10.1 Inventory: 44 tests
+### 10.1 Inventory: 45 tests
 
 | Project | Tests | Breakdown |
 |---|---:|---|
-| UnitTests | 28 | `LyricsJsonTests` 4; golden 5 (theory ×3 + 2 facts); parser 13 (6 facts + 2 + 5 theory rows); room code 4; determinism 1; sanity 1 |
+| UnitTests | 29 | `LyricsJsonTests` 4; golden 5 (theory ×3 + 2 facts); parser 13 (6 facts + 2 + 5 theory rows); room code 4; determinism 2; sanity 1 |
 | IntegrationTests | 5 | stem selection 3; end-to-end 1; sanity 1 |
 | ArchitectureTests | 11 | 8 dependency rules + 2 positive controls + sanity 1 |
-| **Total** | **44** | |
+| **Total** | **45** | |
 
 The three sanity tests prove each host discovers and runs tests, so a misconfigured runner cannot
 report zero tests as success.
@@ -961,14 +966,22 @@ The stronger test removes every 105/106 event from the committed MIDI
 the first test would still pass (the fixture has 8 phrases) but this one would fail. It proves a
 decision, not an output.
 
-### 10.4 Determinism: 12 hashes, twice over
+### 10.4 Determinism: what can honestly be compared
 
-`Seed42IsReproducibleAndMatchesTheCommittedDemoTracks` generates into `tempRoot/a` and `tempRoot/b`,
-then for 3 songs × 4 files asserts `hashA == hashB` (12 comparisons), and for each file asserts the
-committed demo exists, has the same hash, **and** is byte-equal. The two halves catch different bugs:
-a-vs-b catches nondeterminism (unseeded RNG, timestamp metadata, thread-dependent encoding);
-vs-committed catches intentional/unintentional pipeline changes. Output can be perfectly deterministic
-and still wrong relative to the fixture.
+The determinism coverage is split into two tests because "deterministic" means two different things
+here. `Seed42IsReproducibleAcrossRuns` generates into `tempRoot/a` and `tempRoot/b` and, for 3 songs
+× 4 files, asserts `hashA == hashB` plus byte equality (12 comparisons). This is the true
+reproducibility property: both runs use the same ffmpeg/libopus build, so it holds in any environment.
+
+`CommittedDemoTrackArtifactsMatchSeed42` generates once and compares only `song.mid` and `lyrics.json`
+against the committed demo copies, byte for byte. It asserts both `.opus` files exist and are
+non-empty, but does **not** compare their bytes. GitHub Actions failed exactly there: the committed
+Opus files came from ffmpeg 4.4.2 and CI's ffmpeg 6.x emits different (still valid) bytes, because
+lossy encoding is coupled to the encoder build, not just to our PCM. Pinning a toolchain would restore
+cross-build equality, but the honest portable assertion is: pure-.NET artifacts are stable everywhere;
+audio is reproducible within an environment (test 1); and the committed audio is present and real.
+That split still catches the interesting bugs — unseeded RNG, timestamps, and thread-dependent output
+in test 1; a changed score, serializer, or MIDI writer in test 2.
 
 ### 10.5 MIDI fixtures in code
 
@@ -986,7 +999,7 @@ Binary fixtures are opaque in review, multiply per edge case, and go stale; a bu
 and can construct exact-threshold gaps, missing markers, and velocity-0 note-offs cheaply. The cost is
 a second implementation that can drift — which is why the real fixtures come from the composer and
 this builder is only for targeted unit tests. It puts 106 at `endTick` (the correct encoding), which
-is how the §4 asymmetry was spotted.
+is how the §4 asymmetry was spotted; `MidiScoreComposer` now uses the same placement.
 
 ### 10.6 Integration with real ffmpeg
 
@@ -1020,7 +1033,8 @@ a failed test is actionable. CI installs ffmpeg, so the guard only fires on deve
 
 NetArchTest 1.3.2 predates .NET 10, and its dependency detection returned false for a dependency the
 assembly provably has. Rather than trust a green suite built on a broken detector, the rules were
-rewritten over reflection: each subject assembly is checked against a forbidden list that includes
+rewritten over reflection (and the unused package pin was later removed from
+`Directory.Packages.props`): each subject assembly is checked against a forbidden list that includes
 both project names and packages (`Melanchall.DryWetMidi`, `CliWrap`,
 `Microsoft.EntityFrameworkCore`). A rule is just:
 
@@ -1073,8 +1087,8 @@ binary. Violation messages print the full referenced-assembly list, so no debugg
 11. **Format and parse invariantly everywhere**, with `InvariantGlobalization` as a backstop.
 12. **No timestamps, GUIDs, hostnames, or absolute paths in artifacts** (temp PCM stays outside).
 13. **Pin versions centrally** and commit the generated fixtures.
-14. **Encode the claim as tests**: generate twice and hash; compare committed bytes; regenerate
-    golden output from committed input.
+14. **Encode the claim as tests**: generate twice and hash every file; compare the tool-independent
+    committed bytes (`song.mid`, `lyrics.json`), and regenerate golden output from committed input.
 
 ## 12. Try it yourself: six experiments
 
@@ -1114,7 +1128,8 @@ dotnet test src/tests/Karaokay.UnitTests --filter "FullyQualifiedName~MidiLyrics
 Expected: that slug's case fails at the first assertion — parsed bytes no longer equal the edited
 fixture. (The demo-copy assertion behind it would also fail, but xUnit stops at the first failure.)
 The other slugs pass; the counts/tempo test still passes. Revert the digit to go green. Editing the
-demo copy instead fails only the second assertion, which shows which copy is the source of truth.
+demo copy instead fails the second assertion **and** `CommittedDemoTrackArtifactsMatchSeed42` (its
+`lyrics.json` comparison), which shows which copy is the source of truth.
 
 ### 12.4 Change one tempo
 
@@ -1125,9 +1140,12 @@ Change Twinkle's second tempo from `100` to `101` (`new TempoChange(32 * 480L, 1
 dotnet test src/tests/Karaokay.UnitTests --filter "FullyQualifiedName~SyntheticGenDeterminismTests"
 ```
 
-Expected: failure on all four twinkle files — `song.mid` carries a different `SetTempo`, the lyric
-milliseconds shift (60000/101 is not whole ms per beat, so boundaries round), and both Opus files
-change. Golden tests still pass because they read the **committed** MIDI, not the score source.
+Expected: `Seed42IsReproducibleAcrossRuns` still passes (both runs see the same change), while
+`CommittedDemoTrackArtifactsMatchSeed42` fails on Twinkle's `song.mid` (different `SetTempo`) and
+`lyrics.json` (60000/101 is not whole ms per beat, so boundaries round). The Opus files are not
+compared to the committed copies; they change too, but that is covered only by same-environment
+reproducibility. Golden tests still pass because they read the **committed** MIDI, not the score
+source.
 
 ### 12.5 Add `crowd.ogg` to an importable folder
 
@@ -1167,10 +1185,9 @@ Add `I` to `RoomCodeGenerator.Alphabet`, then:
 dotnet test src/tests/Karaokay.UnitTests --filter "FullyQualifiedName~RoomCodeGeneratorTests"
 ```
 
-Expected: the literal/`26 - 3` test fails; the exhaustion test fails at `279_841` (a 24-letter
-alphabet yields 331,776); the generation and seeded-collision tests **still pass**, because they draw
-from `Alphabet.Length`. Tests that encode a decision catch the change; tests that encode only the
-mechanism do not.
+Expected: the literal/`26 - 3` test fails; the exhaustion test fails at `279_841`; the generation
+and seeded-collision tests **still pass**, because they draw from `Alphabet.Length`. Tests that
+encode a decision catch the change; tests that encode only the mechanism do not.
 
 ## 13. Where to go next (Slice 2+)
 

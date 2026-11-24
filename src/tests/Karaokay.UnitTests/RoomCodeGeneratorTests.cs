@@ -3,7 +3,7 @@ using Karaokay.Application;
 
 namespace Karaokay.UnitTests;
 
-/// <summary>Locks the 24-letter room-code alphabet and the collision-retry contract (§4.2).</summary>
+/// <summary>Locks the 23-letter room-code alphabet and the collision-retry contract (§4.2).</summary>
 public sealed class RoomCodeGeneratorTests
 {
     private static readonly char[] ForbiddenLetters = ['I', 'O', 'Q'];
@@ -11,9 +11,8 @@ public sealed class RoomCodeGeneratorTests
     [Fact]
     public void AlphabetIsTheDocumentedUnambiguousLetters()
     {
-        // Docs/ARCHITECTURE.md §4.2 prints this exact 23-letter string (26 letters minus I, O, Q).
-        // The prose also says "24 letters"/"331,776 codes", which is an arithmetic slip: no
-        // fourth excluded letter exists. The alphabet literal is authoritative.
+        // Docs/ARCHITECTURE.md §4.2 prints this exact 23-letter string (26 letters minus I, O, Q),
+        // so the alphabet has 23^4 = 279,841 possible codes. The alphabet literal is authoritative.
         Assert.Equal("ABCDEFGHJKLMNPRSTUVWXYZ", RoomCodeGenerator.Alphabet);
         Assert.Equal(26 - 3, RoomCodeGenerator.Alphabet.Length);
         Assert.Equal(RoomCodeGenerator.Alphabet.Length, RoomCodeGenerator.Alphabet.Distinct().Count());
@@ -51,7 +50,8 @@ public sealed class RoomCodeGeneratorTests
     {
         const int seed = 12345;
 
-        // Replay the exact sequence the generator will draw: four Alphabet[random.Next(24)] picks.
+        // Replay the exact sequence the generator will draw: four
+        // Alphabet[random.Next(Alphabet.Length)] picks (23 letters).
         var replay = new Random(seed);
         var firstCode = BuildCode(replay);
         var secondCode = BuildCode(replay);

@@ -27,13 +27,17 @@ public sealed class StemMixerException : Exception
 /// </summary>
 public static partial class StemMixer
 {
-    /// <summary>FFmpeg's amix filter expects at least one input; the importer always supplies one.</summary>
+    /// <summary>
+    /// Integrated loudness target (LUFS) for baked stems and the single source of truth for the
+    /// <c>loudnorm</c> <c>I=</c> argument and the importer's summary output.
+    /// </summary>
     public const int LoudnessTargetLufs = -16;
 
     private const string Ffmpeg = "ffmpeg";
     private const string Ffprobe = "ffprobe";
-    private const string LoudnormFilter =
-        "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json";
+    private static readonly string LoudnormFilter = string.Create(
+        CultureInfo.InvariantCulture,
+        $"loudnorm=I={LoudnessTargetLufs}:TP=-1.5:LRA=11:print_format=json");
 
     /// <summary>
     /// Selects the stems that make up the instrumental: every <c>*.ogg</c>/<c>*.oga</c> except
@@ -451,7 +455,7 @@ public static partial class StemMixer
         public string ToLoudnormFilter() =>
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"loudnorm=I=-16:TP=-1.5:LRA=11:measured_i={InputI:0.00}" +
+                $"loudnorm=I={LoudnessTargetLufs}:TP=-1.5:LRA=11:measured_i={InputI:0.00}" +
                 $":measured_tp={InputTp:0.00}:measured_lra={InputLra:0.00}" +
                 $":measured_thresh={InputThresh:0.00}:offset={TargetOffset:0.00}:linear=true:print_format=json");
     }

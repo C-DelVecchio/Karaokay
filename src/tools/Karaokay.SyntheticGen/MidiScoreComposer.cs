@@ -307,9 +307,12 @@ internal static class MidiScoreComposer
 
         foreach (var marker in score.Markers)
         {
+            // 105 opens the phrase span; 106 closes it at the phrase-end tick (the last syllable's
+            // note-off). Emitting the 106 note-on at the start tick would make every span
+            // zero-length, leaving phrase extents to be inferred from syllables alone.
             Add(marker.StartTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseStartNote, (SevenBitNumber)(byte)NoteVelocity));
             Add(marker.EndTick, 2, new NoteOffEvent((SevenBitNumber)(byte)PhraseStartNote, (SevenBitNumber)0));
-            Add(marker.StartTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)(byte)NoteVelocity));
+            Add(marker.EndTick, 1, new NoteOnEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)(byte)NoteVelocity));
             Add(marker.EndTick, 2, new NoteOffEvent((SevenBitNumber)(byte)PhraseEndNote, (SevenBitNumber)0));
         }
 

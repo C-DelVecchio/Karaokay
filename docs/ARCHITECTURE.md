@@ -163,7 +163,7 @@ karaokay/
 │       ├── Karaokay.UnitTests/          # domain, midi parser (golden-file tests), room codes
 │       ├── Karaokay.IntegrationTests/   # WebApplicationFactory + Testcontainers (Postgres),
 │       │                                 # SignalR hub integration, yt-dlp worker (mocked binary)
-│       └── Karaokay.ArchitectureTests/  # NetArchTest rules (e.g., Domain has no EF refs)
+│       └── Karaokay.ArchitectureTests/  # architecture dependency rules (e.g., Domain has no EF refs)
 │
 ├── infra/
 │   ├── docker/ (server.Dockerfile [aspnet + yt-dlp + ffmpeg + deno], docker-compose.yml
@@ -346,7 +346,7 @@ public class QueueItem {
 }
 ```
 
-**Room code alphabet:** `ABCDEFGHJKLMNPRSTUVWXYZ` — 24 letters (no `I O Q 0 1`) → 331,776 codes.
+**Room code alphabet:** `ABCDEFGHJKLMNPRSTUVWXYZ` — 23 letters (no `I O Q`) → 279,841 codes.
 The `RoomCodeGenerator` generates against an in-memory active-set plus the DB unique index as the
 collision backstop.
 
@@ -698,7 +698,7 @@ Each slice below specifies files to create, required tests, and a copy-paste
   (no-marker fixture); phrase gap + countdown beat math; 4-letter code generator
   alphabet/collision.
 - Integration: SyntheticGen runs in CI (FFmpeg via apt in workflow), produces 3 songs, importer
-  `verify` validates every `lyrics.json` against a JSON Schema check + roundtrip parse.
+  `verify` validates every `lyrics.json` via `LyricsJson.Validate` + a byte-identical round-trip parse.
 
 **Definition of Done**
 
