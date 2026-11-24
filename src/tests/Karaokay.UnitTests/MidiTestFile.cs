@@ -61,6 +61,14 @@ internal sealed class MidiTrackBuilder
     public MidiTrackBuilder LineEnd(long tick) =>
         AddEvent(tick, 3, new TextEvent(LineEndMarker));
 
+    /// <summary>Adds a bare note-on/note-off pair with no lyric at the note-on tick.</summary>
+    public MidiTrackBuilder UnmatchedNote(long startTick, long endTick, int noteNumber)
+    {
+        AddEvent(endTick, 2, new NoteOffEvent(Seven(noteNumber), (SevenBitNumber)0));
+        AddEvent(startTick, 5, new NoteOnEvent(Seven(noteNumber), (SevenBitNumber)NoteVelocity));
+        return this;
+    }
+
     public TrackChunk Build()
     {
         var ordered = _events

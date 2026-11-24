@@ -209,6 +209,41 @@ public sealed class MidiLyricsParserUnitTests
         Assert.Equal(baselineGaps[0].ToMs + 250, shiftedGaps[0].ToMs);
     }
 
+    [Fact]
+    public void AnUnmatchedNoteOffDoesNotTrimAStillOpenSyllable()
+    {
+        // The note-on at tick 120 has no adjacent lyric, so the parser drops it; its note-off at
+        // tick 480 must be swallowed instead of ending the legitimate note (ticks 240-960), which
+        // the old FIFO head would have closed after only 240 ticks.
+        var midi = MidiTestFile.Create(
+            new MidiTrackBuilder("PART VOCALS")
+                .UnmatchedNote(120, 480, 60)
+                .Syllable(240, 960, 60, "held"));
+
+        var syllable = Assert.Single(Syllables(Parse(midi)));
+
+        Assert.Equal("held", syllable.Text);
+        Assert.Equal(250L, syllable.StartMs);
+        Assert.Equal(1000L, syllable.EndMs);
+    }
+
+    [Fact]
+    public void AnUnmatchedNoteOffAfterALegitimateNoteLeavesThatNoteAlone()
+    {
+        // Mirrors a chart where the stray note-on follows the real one; note-offs arrive in FIFO
+        // order (960 closes the real note, 1200 consumes the dropped note-on's sentinel).
+        var midi = MidiTestFile.Create(
+            new MidiTrackBuilder("PART VOCALS")
+                .Syllable(0, 960, 60, "held")
+                .UnmatchedNote(240, 1200, 60));
+
+        var syllable = Assert.Single(Syllables(Parse(midi)));
+
+        Assert.Equal("held", syllable.Text);
+        Assert.Equal(0L, syllable.StartMs);
+        Assert.Equal(1000L, syllable.EndMs);
+    }
+
     private static LyricsDocument Parse(MidiFile midi, MidiLyricsParserOptions? options = null) =>
         MidiLyricsParser.Parse(
             midi,

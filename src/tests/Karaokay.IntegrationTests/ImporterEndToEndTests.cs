@@ -13,7 +13,10 @@ namespace Karaokay.IntegrationTests;
 /// End-to-end importer test: a synthetic "extracted Rock Band" folder (song.ini + FFmpeg sine
 /// stems + a contract-shaped notes.mid) is imported into the canonical three-file layout and then
 /// verified. Exercises real FFmpeg stem mixing, loudness normalization and lyrics round-tripping.
+/// Shares the importer console collection so its CLI output cannot interleave with the
+/// failure-path tests that redirect <see cref="Console"/>.
 /// </summary>
+[Collection(ImporterConsoleFixture.Name)]
 public sealed class ImporterEndToEndTests
 {
     private static readonly string[] ExpectedOutputFiles = ["instrumental.opus", "lyrics.json", "vocals.opus"];

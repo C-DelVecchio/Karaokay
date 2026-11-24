@@ -1,7 +1,9 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using Karaokay.Contracts;
 using Karaokay.Infrastructure.MediaIngest;
+using Melanchall.DryWetMidi.Common;
 using Melanchall.DryWetMidi.Core;
 
 namespace Karaokay.Importer.Commands;
@@ -13,6 +15,9 @@ namespace Karaokay.Importer.Commands;
 internal static class ImportCommand
 {
     private const string DefaultOutDirectoryName = "karaokay-out";
+
+    /// <summary>Upper bound on <c>-2</c>, <c>-3</c>, … collision suffixes before hash fallback.</summary>
+    private const int MaxCollisionSuffix = 999;
 
     public static async Task<int> ExecuteAsync(string[] args, CancellationToken cancellationToken)
     {
@@ -58,7 +63,10 @@ internal static class ImportCommand
             return Fail(exception.Message);
         }
 
-        var songId = ResolveSongId(ini, directory);
+        var targetRoot = string.IsNullOrWhiteSpace(outRoot)
+            ? Path.Combine(directory, DefaultOutDirectoryName)
+            : outRoot;
+        var songId = ResolveSongId(ini, directory, targetRoot);
 
         LyricsDocument lyrics;
         try
@@ -76,14 +84,37 @@ internal static class ImportCommand
         {
             return Fail($"MIDI parse failed for '{midiPath}': {exception.Message}");
         }
+        catch (MidiException exception)
+        {
+            // Malformed/truncated MIDI (headers, chunk sizes, running status…) — report it cleanly
+            // instead of letting a third-party exception escape with a stack trace.
+            return Fail($"invalid MIDI file '{midiPath}': {exception.Message}");
+        }
         catch (IOException exception)
         {
             return Fail($"could not read '{midiPath}': {exception.Message}");
         }
+        catch (UnauthorizedAccessException exception)
+        {
+            return Fail($"could not read '{midiPath}': {exception.Message}");
+        }
 
-        var stems = Directory.EnumerateFiles(directory)
-            .Where(IsStemFile)
-            .ToList();
+        List<string> stems;
+        try
+        {
+            stems = Directory.EnumerateFiles(directory)
+                .Where(IsStemFile)
+                .ToList();
+        }
+        catch (IOException exception)
+        {
+            return Fail($"could not list '{directory}': {exception.Message}");
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return Fail($"could not list '{directory}': {exception.Message}");
+        }
+
         var instrumentalStems = StemMixer.SelectInstrumentalStems(stems);
         if (instrumentalStems.Count == 0)
         {
@@ -91,18 +122,22 @@ internal static class ImportCommand
         }
 
         var vocalStems = StemMixer.SelectVocalStems(stems);
-        var targetRoot = string.IsNullOrWhiteSpace(outRoot)
-            ? Path.Combine(directory, DefaultOutDirectoryName)
-            : outRoot;
         var songDirectory = Path.Combine(targetRoot, songId);
         var instrumentalPath = Path.Combine(songDirectory, "instrumental.opus");
         var vocalsPath = Path.Combine(songDirectory, "vocals.opus");
         var lyricsPath = Path.Combine(songDirectory, "lyrics.json");
 
+        // Every output is baked/written next to its final path and moved into place only after all
+        // three succeeded, so a failed or cancelled bake can never leave a truncated file that
+        // `verify` would accept.
+        var instrumentalTempPath = CreateTempPath(instrumentalPath);
+        var vocalsTempPath = CreateTempPath(vocalsPath);
+        var lyricsTempPath = CreateTempPath(lyricsPath);
+
         try
         {
             Directory.CreateDirectory(songDirectory);
-            await StemMixer.BakeInstrumentalAsync(instrumentalStems, instrumentalPath, cancellationToken)
+            await StemMixer.BakeInstrumentalAsync(instrumentalStems, instrumentalTempPath, cancellationToken)
                 .ConfigureAwait(false);
 
             if (vocalStems.Count == 0)
@@ -110,22 +145,29 @@ internal static class ImportCommand
                 Console.Error.WriteLine(
                     "warning: no vocals*.ogg stem found; writing a 1-second silent vocals.opus so the " +
                     "three-file layout is always produced.");
-                await StemMixer.CreateSilentOpusAsync(vocalsPath, cancellationToken).ConfigureAwait(false);
+                await StemMixer.CreateSilentOpusAsync(vocalsTempPath, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                await StemMixer.BakeVocalsAsync(vocalStems, vocalsPath, cancellationToken)
+                await StemMixer.BakeVocalsAsync(vocalStems, vocalsTempPath, cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            var probedDurationMs = await StemMixer.TryProbeDurationMsAsync(instrumentalPath, cancellationToken)
+            var probedDurationMs = await StemMixer.TryProbeDurationMsAsync(instrumentalTempPath, cancellationToken)
                 .ConfigureAwait(false);
             if (probedDurationMs is > 0)
             {
                 lyrics.DurationMs = probedDurationMs.Value;
             }
 
-            File.WriteAllText(lyricsPath, LyricsJson.Serialize(lyrics), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.WriteAllText(
+                lyricsTempPath,
+                LyricsJson.Serialize(lyrics),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            File.Move(instrumentalTempPath, instrumentalPath, overwrite: true);
+            File.Move(vocalsTempPath, vocalsPath, overwrite: true);
+            File.Move(lyricsTempPath, lyricsPath, overwrite: true);
         }
         catch (StemMixerException exception)
         {
@@ -138,6 +180,12 @@ internal static class ImportCommand
         catch (UnauthorizedAccessException exception)
         {
             return Fail($"could not write song output: {exception.Message}");
+        }
+        finally
+        {
+            TryDeleteFile(instrumentalTempPath);
+            TryDeleteFile(vocalsTempPath);
+            TryDeleteFile(lyricsTempPath);
         }
 
         await PrintSummaryAsync(
@@ -154,32 +202,54 @@ internal static class ImportCommand
         return ImporterCli.ExitSuccess;
     }
 
-    /// <summary>Slugifies a display name into a filesystem-safe song id.</summary>
+    /// <summary>
+    /// Slugifies a display name into a filesystem-safe song id: Latin diacritics are folded to
+    /// ASCII and non-Latin titles (which would otherwise collapse to nothing) fall back to a
+    /// deterministic short hash so distinct songs never share a directory.
+    /// </summary>
+    /// <remarks>
+    /// The BCL's <see cref="NormalizationForm.FormD"/> decomposition is a no-op under
+    /// <c>InvariantGlobalization</c> (the solution-wide setting), so folding relies on an explicit
+    /// Latin table; the normalization pass still helps on globalization-enabled hosts.
+    /// </remarks>
     internal static string Slugify(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
 
         var builder = new StringBuilder(value.Length);
         var separatorPending = false;
-        foreach (var character in value.Trim().ToLowerInvariant())
+        foreach (var character in value.Trim().Normalize(NormalizationForm.FormD))
         {
-            if (char.IsAsciiLetterOrDigit(character))
+            if (char.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
             {
-                if (separatorPending && builder.Length > 0)
-                {
-                    builder.Append('-');
-                }
-
-                separatorPending = false;
-                builder.Append(character);
+                // Combining accent left by FormD on globalization-enabled hosts: drop it (é -> e).
+                continue;
             }
-            else
+
+            var lowered = char.ToLowerInvariant(character);
+            var folded = LatinFolds.TryGetValue(lowered, out var replacement)
+                ? replacement
+                : lowered.ToString();
+            foreach (var candidate in folded)
             {
-                separatorPending = true;
+                if (char.IsAsciiLetterOrDigit(candidate))
+                {
+                    if (separatorPending && builder.Length > 0)
+                    {
+                        builder.Append('-');
+                    }
+
+                    separatorPending = false;
+                    builder.Append(candidate);
+                }
+                else
+                {
+                    separatorPending = true;
+                }
             }
         }
 
-        return builder.Length == 0 ? "song" : builder.ToString();
+        return builder.Length == 0 ? BuildHashSlug(value) : builder.ToString();
     }
 
     /// <summary>Parses <c>import</c> arguments; exposed for integration tests.</summary>
@@ -234,12 +304,27 @@ internal static class ImportCommand
         return true;
     }
 
-    /// <summary>Chooses <c>song_id</c> from song.ini, falling back to a slug of the name/directory.</summary>
-    internal static string ResolveSongId(SongIni ini, string directory)
+    /// <summary>
+    /// Chooses <c>song_id</c> from song.ini, falling back to a slug of the name/directory. When
+    /// <paramref name="outRoot"/> is known, an existing directory holding a <em>different</em> song
+    /// gets a numeric suffix instead of being silently overwritten.
+    /// </summary>
+    internal static string ResolveSongId(SongIni ini, string directory, string? outRoot = null)
     {
         ArgumentNullException.ThrowIfNull(ini);
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
 
+        var baseId = ResolveBaseSongId(ini, directory);
+        if (string.IsNullOrWhiteSpace(outRoot))
+        {
+            return baseId;
+        }
+
+        return ResolveCollisionSafeId(Path.GetFullPath(outRoot), baseId, ini);
+    }
+
+    private static string ResolveBaseSongId(SongIni ini, string directory)
+    {
         if (!string.IsNullOrWhiteSpace(ini.SongId))
         {
             var declared = ini.SongId.Trim();
@@ -256,6 +341,137 @@ internal static class ImportCommand
 
         var directoryName = Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)));
         return Slugify(directoryName);
+    }
+
+    private static string ResolveCollisionSafeId(string root, string baseId, SongIni ini)
+    {
+        if (IsIdAvailable(root, baseId, ini))
+        {
+            return baseId;
+        }
+
+        for (var suffix = 2; suffix <= MaxCollisionSuffix; suffix++)
+        {
+            var candidate = string.Create(CultureInfo.InvariantCulture, $"{baseId}-{suffix}");
+            if (IsIdAvailable(root, candidate, ini))
+            {
+                return candidate;
+            }
+        }
+
+        return $"{baseId}-{ShortHash(baseId + "\n" + ini.Name + "\n" + ini.Artist)}";
+    }
+
+    private static bool IsIdAvailable(string root, string candidate, SongIni ini)
+    {
+        var songDirectory = Path.Combine(root, candidate);
+        if (!Directory.Exists(songDirectory))
+        {
+            return true;
+        }
+
+        // Re-importing the same song into the same root should refresh its files, not create a
+        // duplicate "-2" directory.
+        if (HoldsSameSong(songDirectory, ini))
+        {
+            return true;
+        }
+
+        try
+        {
+            return !Directory.EnumerateFileSystemEntries(songDirectory).Any();
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HoldsSameSong(string songDirectory, SongIni ini)
+    {
+        var lyricsPath = Path.Combine(songDirectory, "lyrics.json");
+        if (!File.Exists(lyricsPath))
+        {
+            return false;
+        }
+
+        LyricsDocument? existing;
+        try
+        {
+            existing = LyricsJson.DeserializeFile(lyricsPath);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        if (existing is null)
+        {
+            return false;
+        }
+
+        return string.Equals(existing.Title.Trim(), ini.Name.Trim(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existing.Artist.Trim(), ini.Artist.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildHashSlug(string value) =>
+        "song-" + ShortHash(value);
+
+    private static string ShortHash(string value)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Lowercase Latin characters that carry diacritics or non-ASCII letters, folded to ASCII.
+    /// Built from base-letter groups so adding a character cannot break the slug format.
+    /// </summary>
+    private static readonly Dictionary<char, string> LatinFolds = BuildLatinFolds();
+
+    private static Dictionary<char, string> BuildLatinFolds()
+    {
+        var folds = new Dictionary<char, string>();
+        AddLatinFolds(folds, "a", "àáâãäåāăąǎȁȃạảấầẩẫậắằẳẵặ");
+        AddLatinFolds(folds, "c", "çćĉċč");
+        AddLatinFolds(folds, "d", "ďđð");
+        AddLatinFolds(folds, "e", "èéêëēĕėęěȅȇẹẻẽếềểễệ");
+        AddLatinFolds(folds, "g", "ĝğġģ");
+        AddLatinFolds(folds, "h", "ĥħ");
+        AddLatinFolds(folds, "i", "ìíîïĩīĭįıǐȉȋịỉİ");
+        AddLatinFolds(folds, "j", "ĵ");
+        AddLatinFolds(folds, "k", "ķ");
+        AddLatinFolds(folds, "l", "ĺļľł");
+        AddLatinFolds(folds, "n", "ñńņňŉ");
+        AddLatinFolds(folds, "o", "òóôõöøōŏőȍȏọỏơớờởỡợ");
+        AddLatinFolds(folds, "r", "ŕŗřȑȓ");
+        AddLatinFolds(folds, "s", "śŝşšș");
+        AddLatinFolds(folds, "t", "ţťŧț");
+        AddLatinFolds(folds, "u", "ùúûüũūŭůűųǔȕȗụủưứừửữự");
+        AddLatinFolds(folds, "w", "ŵ");
+        AddLatinFolds(folds, "y", "ýÿŷȳỳỵỷỹ");
+        AddLatinFolds(folds, "z", "źżž");
+        AddLatinFolds(folds, "ae", "æ");
+        AddLatinFolds(folds, "oe", "œ");
+        AddLatinFolds(folds, "ss", "ß");
+        AddLatinFolds(folds, "th", "þ");
+        return folds;
+    }
+
+    private static void AddLatinFolds(Dictionary<char, string> folds, string replacement, string characters)
+    {
+        foreach (var character in characters)
+        {
+            folds[character] = replacement;
+        }
     }
 
     private static async Task PrintSummaryAsync(
@@ -304,6 +520,41 @@ internal static class ImportCommand
         && value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
         && !value.Contains(Path.DirectorySeparatorChar)
         && !value.Contains(Path.AltDirectorySeparatorChar);
+
+    /// <summary>
+    /// Sibling temp path that keeps the final extension (so FFprobe/FFmpeg still infer the format)
+    /// while being clearly temporary.
+    /// </summary>
+    private static string CreateTempPath(string finalPath)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(finalPath)) ?? string.Empty;
+        var fileName = Path.GetFileNameWithoutExtension(finalPath);
+        var extension = Path.GetExtension(finalPath);
+        return Path.Combine(
+            directory,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $".{fileName}.{Guid.NewGuid():N}.tmp{extension}"));
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup of a partially written temp file.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Best-effort cleanup of a partially written temp file.
+        }
+    }
 
     private static int Fail(string message)
     {

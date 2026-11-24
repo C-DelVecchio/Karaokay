@@ -7,7 +7,7 @@ using CliWrap;
 namespace Karaokay.Infrastructure.MediaIngest;
 
 /// <summary>Raised when FFmpeg/FFprobe stem processing fails.</summary>
-public sealed class StemMixerException : Exception
+public class StemMixerException : Exception
 {
     public StemMixerException(string message)
         : base(message)
@@ -15,6 +15,24 @@ public sealed class StemMixerException : Exception
     }
 
     public StemMixerException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
+/// Raised when an FFmpeg/FFprobe process cannot be started at all (for example the executable is
+/// missing from <c>PATH</c>). Kept distinct from <see cref="StemMixerException"/> so optional tools
+/// can degrade instead of aborting the import.
+/// </summary>
+public sealed class StemMixerProcessStartException : StemMixerException
+{
+    public StemMixerProcessStartException(string message)
+        : base(message)
+    {
+    }
+
+    public StemMixerProcessStartException(string message, Exception innerException)
         : base(message, innerException)
     {
     }
@@ -144,11 +162,23 @@ public static partial class StemMixer
     /// Probes a media file's duration in milliseconds with FFprobe; returns <c>null</c> when
     /// FFprobe is unavailable or the duration cannot be determined.
     /// </summary>
-    public static async Task<long?> TryProbeDurationMsAsync(
+    public static Task<long?> TryProbeDurationMsAsync(
         string file,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        TryProbeDurationMsAsync(file, Ffprobe, cancellationToken);
+
+    /// <summary>
+    /// Probes a duration with an explicit FFprobe executable; returns <c>null</c> when the process
+    /// cannot be started (tool missing) or reports no usable duration. Exposed for tests that need
+    /// to simulate a machine without FFprobe without touching global state.
+    /// </summary>
+    internal static async Task<long?> TryProbeDurationMsAsync(
+        string file,
+        string ffprobeExecutable,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(file);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ffprobeExecutable);
 
         var arguments = new List<string>
         {
@@ -164,10 +194,12 @@ public static partial class StemMixer
         ProcessResult result;
         try
         {
-            result = await RunProcessAsync(Ffprobe, arguments, cancellationToken).ConfigureAwait(false);
+            result = await RunProcessAsync(ffprobeExecutable, arguments, cancellationToken).ConfigureAwait(false);
         }
-        catch (System.ComponentModel.Win32Exception)
+        catch (StemMixerProcessStartException)
         {
+            // Optional tool: a missing ffprobe must not abort the import, it only costs us the
+            // probe-derived duration.
             return null;
         }
 
@@ -383,7 +415,9 @@ public static partial class StemMixer
         }
         catch (System.ComponentModel.Win32Exception exception)
         {
-            throw new StemMixerException($"Could not start '{fileName}'. Is it installed on PATH?", exception);
+            throw new StemMixerProcessStartException(
+                $"Could not start '{fileName}'. Is it installed on PATH?",
+                exception);
         }
 
         return new ProcessResult(result.ExitCode, standardOutput.ToString(), standardError.ToString());

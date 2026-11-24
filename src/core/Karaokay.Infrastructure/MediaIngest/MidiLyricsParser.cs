@@ -47,6 +47,13 @@ public static class MidiLyricsParser
     private const string VocalsPart = "vocals";
     private const double DefaultBeatMs = 500.0;
 
+    /// <summary>
+    /// Placeholder queued in <c>openNotes</c> for a note-on that was dropped because no lyric
+    /// preceded it at the same tick. Its matching note-off is swallowed instead of closing an
+    /// unrelated syllable.
+    /// </summary>
+    private const int DroppedNoteOn = -1;
+
     internal readonly record struct TempoPoint(long Tick, long StartMs, double Bpm)
     {
         public double BeatMs => 60000.0 / Bpm;
@@ -426,6 +433,9 @@ public static class MidiLyricsParser
         var isHarmony = kind != PartKind.Vocals;
         var syllables = new List<ParsedSyllable>();
         var spans = new List<(long StartTick, long EndTick)>();
+        // Per-pitch FIFO of syllable indexes. A note-on that is dropped for lack of an adjacent
+        // lyric still enqueues the DroppedNoteOn sentinel, so its later note-off is consumed
+        // instead of trimming the tail of a different, genuinely open syllable.
         var openNotes = new Dictionary<int, Queue<int>>();
 
         var tick = 0L;
@@ -469,7 +479,7 @@ public static class MidiLyricsParser
             while (queue.Count > 0)
             {
                 var index = queue.Dequeue();
-                if (syllables[index].EndTick < 0)
+                if (index != DroppedNoteOn && syllables[index].EndTick < 0)
                 {
                     syllables[index].EndTick = lastTick;
                 }
@@ -540,6 +550,10 @@ public static class MidiLyricsParser
 
             if (previousEvent is not LyricEvent lyricEvent || previousTick != tick)
             {
+                // No adjacent lyric: the chart is messy, so the note is dropped — but its note-off
+                // still has to be matched. Record a sentinel at this pitch/position so the note-off
+                // is consumed here rather than closing another still-open syllable.
+                EnqueueOpenNote(noteNumber, DroppedNoteOn);
                 return;
             }
 
@@ -554,14 +568,18 @@ public static class MidiLyricsParser
 
             syllables.Add(parsed);
             lastSyllable = parsed;
+            EnqueueOpenNote(noteNumber, syllables.Count - 1);
+        }
 
+        void EnqueueOpenNote(int noteNumber, int syllableIndex)
+        {
             if (!openNotes.TryGetValue(noteNumber, out var queue))
             {
                 queue = new Queue<int>();
                 openNotes[noteNumber] = queue;
             }
 
-            queue.Enqueue(syllables.Count - 1);
+            queue.Enqueue(syllableIndex);
         }
 
         void CloseNote(int noteNumber, long endTick)
@@ -572,6 +590,11 @@ public static class MidiLyricsParser
             }
 
             var index = queue.Dequeue();
+            if (index == DroppedNoteOn)
+            {
+                return;
+            }
+
             syllables[index].EndTick = endTick;
         }
     }

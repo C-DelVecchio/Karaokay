@@ -1,4 +1,6 @@
 using System.Globalization;
+using Karaokay.Contracts;
+using Karaokay.Infrastructure.MediaIngest;
 using Karaokay.SyntheticGen;
 
 namespace Karaokay.UnitTests;
@@ -130,6 +132,52 @@ public sealed class SyntheticGenDeterminismTests
         finally
         {
             TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    /// <summary>
+    /// Content-level guard for the committed demo audio: an exists/non-empty check would happily
+    /// accept a silent render. Probes the real duration against the lyrics timeline and measures
+    /// integrated loudness, so a silent or truncated renderer fails the suite.
+    /// </summary>
+    /// <remarks>
+    /// The committed synthetic stems are baked at fixed gain and never pass <c>loudnorm</c>, so the
+    /// assets measure about −14.5 LUFS (instrumental) and −11.6 LUFS (vocals) on FFmpeg's EBU R128
+    /// scanner. The −16 LUFS target applies to the importer's bake pipeline, not to these assets.
+    /// The bands below are therefore placed around the rendered level: they still reject silence
+    /// (≈ −70 LUFS) and corruption, but cannot use the importer's −17…−15 band without regenerating
+    /// the byte-identical committed fixtures, which is forbidden.
+    /// </remarks>
+    [Fact]
+    public async Task CommittedDemoAudioMatchesTheTimelineDurationAndIsNotSilent()
+    {
+        FfmpegGuard.Require();
+        FfmpegGuard.RequireFfprobe();
+
+        foreach (var slug in TestPaths.DemoTrackSlugs)
+        {
+            var songDirectory = TestPaths.DemoTrackDirectory(slug);
+            var lyrics = LyricsJson.DeserializeFile(Path.Combine(songDirectory, "lyrics.json"));
+            Assert.NotNull(lyrics);
+
+            foreach (var fileName in new[] { "instrumental.opus", "vocals.opus" })
+            {
+                var path = Path.Combine(songDirectory, fileName);
+                var durationMs = await StemMixer.TryProbeDurationMsAsync(path);
+                Assert.True(
+                    durationMs is not null,
+                    $"FFprobe could not read a duration from committed demo asset '{path}'.");
+                Assert.InRange(
+                    durationMs!.Value,
+                    lyrics.DurationMs - 250,
+                    lyrics.DurationMs + 250);
+
+                var lufs = await StemMixer.MeasureIntegratedLufsAsync(path);
+                var (minLufs, maxLufs) = fileName == "instrumental.opus"
+                    ? (-17.0, -13.0)
+                    : (-14.0, -9.0);
+                Assert.InRange(lufs, minLufs, maxLufs);
+            }
         }
     }
 
