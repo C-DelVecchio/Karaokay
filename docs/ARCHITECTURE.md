@@ -1,6 +1,6 @@
 # Karaokay — Architectural Blueprint & Phased Implementation Plan
 
-> **Status:** Accepted · **Version:** 1.1 · **Date:** 2026-11-23
+> **Status:** Accepted · **Version:** 1.2 · **Date:** 2026-11-24
 >
 > Karaokay is a self-hosted, multi-client, real-time party karaoke platform inspired by classic
 > karaoke machines, Rock Band, and Jackbox Games. It is engineered as a GitHub portfolio showcase
@@ -14,12 +14,15 @@
 > auto-pause resilience; deterministic yt-dlp format selection + optional cookies mount;
 > phrase-marker parsing and stem loudness normalization; AudioContext gesture unlock;
 > `ReportSongEnded` idempotency + hub role gating; provider-specific filtered-index syntax;
-> project renamed to **Karaokay**.
+> project renamed to **Karaokay**. 1.2 — Slice 1 reconciliation: room-code alphabet corrected to
+> 23 letters / 279,841 codes (ADR-005); line-wrapping ownership moved to the renderer (ADR-006).
 >
 > Companion decision records: [ADR-001](adr/001-single-replica-signalr-azure.md) ·
 > [ADR-002](adr/002-android-oboe-hdmi-usb-drift.md) ·
 > [ADR-003](adr/003-dual-mode-stage-web-vs-native.md) ·
-> [ADR-004](adr/004-dual-source-media-pipeline.md)
+> [ADR-004](adr/004-dual-source-media-pipeline.md) ·
+> [ADR-005](adr/005-slice-1-blueprint-reconciliations.md) ·
+> [ADR-006](adr/006-line-wrapping-ownership.md)
 
 ## Table of Contents
 
@@ -259,7 +262,7 @@ dots.
 |---|---|
 | Tick → ms | Exact conversion via `SetTempo` map (DryWetMidi `TempoMap`; piecewise-constant BPM). All fields stored pre-flattened to ms. |
 | Phrase grouping | **Prefer explicit Rock Band phrase-boundary marker notes (`105`/`106` on `PART VOCALS`/`HARM*`) when present.** Fallback when markers are absent: a phrase ends when the next note begins > `PhraseGapMs` (default 1,500 ms) after the previous note's end, or at end-of-track marker events. |
-| Line breaks | A line wraps when cumulative syllable width at render font exceeds `MaxLineWidthEm` (stored per-line by importer using measured glyph widths at a reference font; renderer may re-flow but honors `lineBreakAfter`). |
+| Line breaks | The importer stores only **explicit** breaks derived from `[line_end]` text events (`lineBreakAfter: true` on the syllable that ends the line); a chart without `[line_end]` markers yields one line per phrase. The **renderer owns re-flow**: it wraps a line when cumulative syllable width at the render font exceeds `MaxLineWidthEm`, measured against its own font metrics, and always honors importer-provided `lineBreakAfter` breaks. |
 | Syllable connectors | Lyric text ending in `-` or `+` → strip marker, set `connectsToNext: true` (word continues; sweep does not reset). |
 | Talky / spoken-word | Lyric text starting `#` (or `^` in HARM tracks) → `talky: true`; a render style hint — flat spoken-word fill with no syllable sweep pulse. |
 | Countdown dots | Any inter-phrase gap ≥ `MinCountdownGapMs` (default 2,000 ms) gets `renderCountdown: true`, `countdownBeats = min(4, floor(gapMs / beatMs))`; dots fill beat-by-beat counting *down* to `toMs`. |
