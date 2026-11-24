@@ -4,7 +4,7 @@
 - **Scope:** Slice 1 (`lyrics.json` contract, MIDI parser, synthetic demo generator, importer CLI,
   architecture rules), reviewed against [ARCHITECTURE.md](../ARCHITECTURE.md) v1.1 and the
   [Slice 1 walkthrough](../learning/slice-1-walkthrough.md)
-- **Follow-up:** majors addressed in the uncommitted follow-up code pass (working tree); process
+- **Follow-up:** majors resolved in commit `0f27677` and verified by a follow-up review pass; process
   items recorded in [ADR-005](../adr/005-slice-1-blueprint-reconciliations.md) and
   [ADR-006](../adr/006-line-wrapping-ownership.md); blueprint bumped to v1.2.
 
@@ -24,11 +24,11 @@ a missing `ffprobe` aborting an import instead of degrading). Both classes are u
 pipeline the next slice builds on.
 
 **Combined resolution — fix majors + record process items before Slice 2.** The majors have been
-addressed in the follow-up code pass in the working tree (section b); the process items are
-resolved by ADR-005/ADR-006 (section c). Slice 1 is ready to hand to Slice 2 once those changes
-land and the full test suite is green.
+resolved in commit `0f27677` (section b); the process items are
+resolved by ADR-005/ADR-006 (section c). The full test suite is green and the ADR-004 media
+guard passes on the current tree, so Slice 1 is ready to hand to Slice 2.
 
-## b) Majors — addressed in the follow-up code pass (working tree)
+## b) Majors — resolved in commit `0f27677`
 
 1. **CI lacked the ADR-004 binary-media >100 KB guard.** ADR-004's validation plan promises CI
    fails on any committed binary media over 100 KB outside `public/demo-tracks`, but the workflow
@@ -50,8 +50,8 @@ land and the full test suite is green.
 
 4. **Bake outputs were written non-atomically.** A failed bake could leave a truncated `.opus`
    file that `verify` accepted, because `verify` only checks existence/non-emptiness.
-   `ImportCommand.cs` / `StemMixer.BakeAsync` now stage output and publish it only after the bake
-   succeeds. *Addressed.*
+   `ImportCommand.cs` now stages baked output at sibling temp paths and publishes each file with an
+   atomic move only after all bakes succeed. *Addressed.*
 
 5. **ASCII-only `Slugify` collapsed non-Latin titles to `"song"`, causing silent overwrite
    collisions.** `Slugify`/`ResolveSongId` in `ImportCommand.cs` mapped every non-ASCII title to
@@ -113,3 +113,6 @@ Ordered by rough priority; each item includes the relevant file and a one-line s
 | 17 | `verify` takes a directory where blueprint §3 specifies `verify <songId>`. | `src/tools/Karaokay.Importer/Commands/ImporterCli.cs` | Either amend blueprint §3 or change the command to take a song ID. |
 | 18 | `AppHost` is a plain console placeholder, `ServiceDefaults` is an empty shell the API never calls, and `src/clients/web` has no `package.json`. | `src/apps/Karaokay.AppHost`; `src/apps/Karaokay.ServiceDefaults`; `src/clients/web` | Track as slice entry criteria: AppHost/ServiceDefaults at Slice 3, web scaffold at Slice 2, README before Slice 6. |
 | 19 | Accepted deviations: `RoomCodeGenerator` lives in Application while §3/§7 place it under `apps/Karaokay.Api/Features`; unit tests read committed web-client assets via `TestPaths` (coupling to client layout). | `src/core/Karaokay.Application/RoomCodeGenerator.cs`; `TestPaths.cs` | Keep as documented deviations for now; revisit if Application layering or client layout changes. |
+| 20 | Media-guard extension list omits `.ts`, `.3gp`, `.ico`, `.dds`, `.caf`. | `.github/scripts/check-binary-media.sh` | Extend the extension list (or invert to an allowlist of text/source types). |
+| 21 | The per-file `File.Move` publication is not a group transaction: a failure between moves can leave a new file beside stale siblings. | `src/tools/Karaokay.Importer/Commands/ImportCommand.cs` | Stage into a single directory and publish via one rename, or roll back moved files on failure. |
+| 22 | Parser malformed-input edges: a dropped note-on with no note-off lets a later legitimate note-off be swallowed by the sentinel; unclosed sentinels accumulate. | `MidiLyricsParser.cs` | Acceptable for malformed charts (well-formed charts unaffected); revisit if real-world charts show artifacts. |

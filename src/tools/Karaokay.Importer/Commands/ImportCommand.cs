@@ -208,9 +208,10 @@ internal static class ImportCommand
     /// deterministic short hash so distinct songs never share a directory.
     /// </summary>
     /// <remarks>
-    /// The BCL's <see cref="NormalizationForm.FormD"/> decomposition is a no-op under
-    /// <c>InvariantGlobalization</c> (the solution-wide setting), so folding relies on an explicit
-    /// Latin table; the normalization pass still helps on globalization-enabled hosts.
+    /// The BCL's <see cref="NormalizationForm.FormD"/> decomposition is not relied upon: its
+    /// behavior under the solution-wide <c>InvariantGlobalization</c> setting is not guaranteed
+    /// across runtimes, so folding is driven by an explicit Latin table; the normalization pass
+    /// still strips combining marks on globalization-enabled hosts.
     /// </remarks>
     internal static string Slugify(string value)
     {

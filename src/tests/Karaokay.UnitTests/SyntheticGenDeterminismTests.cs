@@ -145,7 +145,7 @@ public sealed class SyntheticGenDeterminismTests
     /// assets measure about −14.5 LUFS (instrumental) and −11.6 LUFS (vocals) on FFmpeg's EBU R128
     /// scanner. The −16 LUFS target applies to the importer's bake pipeline, not to these assets.
     /// The bands below are therefore placed around the rendered level: they still reject silence
-    /// (≈ −70 LUFS) and corruption, but cannot use the importer's −17…−15 band without regenerating
+    /// (≈ −70 LUFS) and corruption, but cannot reuse the importer bake test's −17…−15 LUFS acceptance band without regenerating
     /// the byte-identical committed fixtures, which is forbidden.
     /// </remarks>
     [Fact]
