@@ -9,6 +9,9 @@ This is a guided tour of **what Karaokay is, what exists today, how the pieces f
 - **Next up:** Slice 4 — playback authority, clock sync, and browser video mode
 - **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.2
 - **Slice 1 beginner guide:** [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md)
+- **Slice 2 learning snapshot:**
+  [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md)
+- **Slice 3 deep guide:** [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md)
 - **Reviews:** [`slice-1`](review/slice-1-review.md) · [`slice-2`](review/slice-2-review.md) · [`slice-3`](review/slice-3-review.md)
 
 ---
@@ -98,16 +101,20 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
   skip, restart, report-ended, guide-vocal volume, and stage capabilities. Clients receive
   `JoinedRoom` snapshots, sequence-numbered `QueueChanged` deltas, `PlaybackChanged`,
   `QueueItemStateChanged`, and structured `HubError` messages.
-- **Rooms.** `POST /api/rooms` reserves a four-letter code in the singleton `RoomRegistry` and
-  writes a `PartyRoom` row; the database unique index is the collision backstop.
+- **Rooms.** `POST /api/rooms` reserves a four-letter code in the singleton `RoomRegistry` and,
+  when a database is configured, persists a `PartyRoom` row; the database unique index is the
+  collision backstop. Without a connection string the room is in-memory only.
   `GET /api/rooms/{code}` returns a full snapshot and `GET /api/rooms/{code}/qr` renders the phone
   join URL as a PNG.
-- **Persistence.** EF Core entities (`Song`, `PartyRoom`, `QueueItem`, `DownloadJob`) and Npgsql
-  migrations. When a connection string is configured the API migrates and seeds the demo songs at
-  startup; when it is absent, the Slice 2 filesystem scan remains a graceful fallback for tests and
-  a bare `dotnet run`.
+- **Persistence.** EF Core entities (`Song`, `PartyRoom`, `QueueItem`) and Npgsql migrations.
+  (`DownloadJob` and its table are planned for Slice 5; only the `DownloadStage` enum exists today.)
+  When a connection string is configured the API migrates and syncs the demo songs at startup; when
+  it is absent, the Slice 2 filesystem scan remains a graceful fallback for tests and a bare
+  `dotnet run`.
 - **Queue engine.** `QueueService` serializes mutations per room with a command lock, persists
-  before broadcasting, renumbers dense positions, and emits one monotonic sequence per change.
+  before broadcasting (memory mutates first, so a persistence failure can leave memory ahead of the
+  database — review minor #9), renumbers dense positions, and emits one monotonic sequence per
+  change.
   Playback is a deliberately small subset of §5.1: start, pause, resume, skip, restart, and an
   idempotent stage end report. Reordering is forward-only — the playing song and ended history are
   the cursor and cannot be moved.
@@ -163,9 +170,12 @@ karaokay/
 ├── opencode.json
 ├── docs/
 │   ├── ARCHITECTURE.md
-│   ├── PROJECT_STATE.md      ← this file
+│   ├── PROJECT_STATE.md      # living snapshot (this file)
 │   ├── adr/
-│   ├── learning/slice-1-walkthrough.md
+│   ├── learning/
+│   │   ├── slice-1-walkthrough.md
+│   │   ├── slice-2-walkthrough.md
+│   │   └── slice-3-walkthrough.md
 │   └── review/{slice-1,slice-2,slice-3}-review.md
 └── src/
     ├── apps/  core/  tools/  clients/web/  tests/
@@ -227,6 +237,8 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 | [006](adr/006-line-wrapping-ownership.md) | The renderer owns glyph-measured wrapping; the importer stores only explicit line breaks. |
 
 - **`learning/slice-1-walkthrough.md`** — a long beginner guide to Slice 1: MIDI, tick math, lyric encoding, FFmpeg mixing, LUFS, and the tests.
+- **`learning/slice-2-walkthrough.md`** — the preserved "Project State After Slice 2" snapshot (commit `ebc3e95`), kept as a learning walkthrough with links fixed for its new home.
+- **`learning/slice-3-walkthrough.md`** — the deep Slice 3 guide: SignalR hubs and groups, the room registry and queue engine, EF Core persistence, the M1 reorder bug, the phone remote, and the review backlog.
 - **`review/slice-1-review.md`**, **`review/slice-2-review.md`**, **`review/slice-3-review.md`** — internal reviews with verdicts, fixed defects, and carry-forward backlogs. The Slice 3 record is the current planning input: it fixes M1 and schedules M2–M5.
 
 ---
@@ -304,10 +316,11 @@ One property, `MediaRoot`. `appsettings.json` uses `media/library`; `appsettings
 
 #### `Endpoints/RoomsEndpoints.cs`
 
-`POST /api/rooms` reserves a code and persists a `PartyRoom`; `GET /api/rooms/{code}` returns the
-same `RoomSnapshot` shape the hub sends; `GET /api/rooms/{code}/qr` renders the phone join URL as a
-PNG with `QRCoder`. The QR URL prefers a configured `PublicBaseUrl` and otherwise trusts the
-request scheme/host — a known reverse-proxy caveat recorded in the review.
+`POST /api/rooms` reserves a code and, when a database is configured, persists a `PartyRoom`; without
+one the room is in-memory only. `GET /api/rooms/{code}` returns the same `RoomSnapshot` shape the hub
+sends; `GET /api/rooms/{code}/qr` renders the phone join URL as a PNG with `QRCoder`. The QR URL
+prefers a configured `PublicBaseUrl` and otherwise trusts the request scheme/host — a known
+reverse-proxy caveat recorded in the review.
 
 #### `Hubs/StageHub.cs`
 
@@ -333,8 +346,9 @@ unique index, releasing the in-memory reservation if persistence collides.
 #### `Features/QueueService.cs` and `QueueOrdering.cs`
 
 Every queue mutation takes the room command lock, mutates memory, persists via a fresh EF Core
-scope, then broadcasts a `QueueChanged` delta with the next sequence. Tracked properties are dense
-positions plus states; `RenumberLocked` keeps zero-based ordering after removes.
+scope, then broadcasts a `QueueChanged` delta with the next sequence. The mutation is memory-first:
+a persistence failure can leave memory ahead of the database (review minor #9). Tracked properties
+are dense positions plus states; `RenumberLocked` keeps zero-based ordering after removes.
 
 `QueueOrdering` holds the pure cursor rules fixed in the Slice 3 review: only upcoming rows may
 move, a target above the playing row clamps to the first upcoming slot, and advance selects the
@@ -347,9 +361,10 @@ watchdog, and clock sync are Slice 4.
 
 `SongCatalog` is the read side used by both HTTP and the hub. With a connection string it queries
 `KaraokayDbContext`; without one it maps deterministic demo GUIDs back to the filesystem scan.
-Entities (`Song`, `PartyRoom`, `QueueItem`, `DownloadJob`) and Npgsql migrations live in
-`Karaokay.Infrastructure/Persistence`. `DemoSongSeeder` inserts the scanned demo songs at startup
-when the database is empty.
+Entities (`Song`, `PartyRoom`, `QueueItem`) and Npgsql migrations live in
+`Karaokay.Infrastructure/Persistence`; `DownloadJob` is planned for Slice 5. `DemoSongSeeder` syncs
+the scanned demo library into the songs table at startup (insert missing rows, update existing ones,
+then save), rather than seeding only an empty database.
 
 Persistence is currently write-only: the database is updated, but a cold restart does not rehydrate
 rooms into `RoomRegistry` (review M4, assigned to Slice 4 or earlier).
@@ -358,7 +373,7 @@ rooms into `RoomRegistry` (review M4, assigned to Slice 4 or earlier).
 
 `.NET Aspire` orchestrates multi-service local development. `AppHost` now starts a PostgreSQL
 container with a persisted data volume and the API with a `Karaokay` connection string; the API
-applies migrations and seeds demo songs on startup. `ServiceDefaults` supplies shared telemetry,
+applies migrations and syncs demo songs on startup. `ServiceDefaults` supplies shared telemetry,
 health checks (`/healthz`), and HTTP resilience. Both are real dependencies of the Slice 3
 experience, not placeholders.
 
@@ -388,10 +403,10 @@ Why one serializer? The generator, importer, golden tests, and `verify` all comp
 
 #### `Karaokay.Domain`
 
-The persistence entities and enums: `Song`, `PartyRoom`, `QueueItem`, `DownloadJob`, plus
-`MediaSource`, `QueueItemState`, `PlaybackStatus`, and `DownloadStage`. The wire mirrors live in
-Contracts because Contracts cannot reference Domain; a parity test is still missing (review minor
-#14).
+The persistence entities and enums: `Song`, `PartyRoom`, `QueueItem`, plus `MediaSource`,
+`QueueItemState`, `PlaybackStatus`, and `DownloadStage`. (`DownloadJob` is a planned Slice 5 entity;
+only its `DownloadStage` enum exists today.) The wire mirrors live in Contracts because Contracts
+cannot reference Domain; a parity test is still missing (review minor #14).
 
 #### `Karaokay.Application`
 
@@ -643,7 +658,7 @@ dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via 
 `dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **86 passed / 9 skipped** on a Docker-less machine; CI runs those nine against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
-connection string to the API, which applies migrations and seeds the demo songs. Without a
+connection string to the API, which applies migrations and syncs the demo songs. Without a
 connection string the API runs the filesystem fallback used by bare `dotnet run` and most tests.
 
 In Development, the API serves the web demo tracks because `MediaRoot` points there. Try:
@@ -773,7 +788,7 @@ Slice 5 adds zero-key YouTube search and `yt-dlp`. Slice 6 deploys to Azure free
 build the Android TV stage: a C++ Oboe engine, then a SkiaSharp renderer consuming the same golden
 decision fixtures as the web.
 
-For full file lists, tests, and Definition-of-Done prompts, read [`docs/ARCHITECTURE.md` §7](ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap). For the deep Slice 1 explanation, read [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md).
+For full file lists, tests, and Definition-of-Done prompts, read [`docs/ARCHITECTURE.md` §7](ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap). For the deep Slice 1 explanation, read [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md); for Slice 3, read [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md).
 
 ---
 
@@ -829,7 +844,7 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 | **Clean Architecture** | Layering pattern where business rules sit in the center and outer layers depend inward. |
 | **CPM** | Central Package Management: one file declares all NuGet versions. |
 | **Dependency injection** | Classes receive dependencies as parameters; a container builds and supplies them. |
-| **EF Core** | Entity Framework Core, Microsoft's ORM for .NET. Used since Slice 3 for songs, rooms, queues, and download jobs. |
+| **EF Core** | Entity Framework Core, Microsoft's ORM for .NET. Used since Slice 3 for songs, rooms, and queues; download jobs arrive with Slice 5. |
 | **ETag** | An opaque fingerprint of a resource version, used for conditional HTTP requests and caching. |
 | **FFmpeg / ffprobe** | Command-line tools for encoding, decoding, mixing, and inspecting media. |
 | **Golden fixture** | A reference output produced by the real implementation, committed, and compared exactly. |
@@ -866,6 +881,8 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the blueprint, v1.2. Start with §7 for the roadmap or §4.1 for the `lyrics.json` contract.
 - [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md) — the deep beginner guide to MIDI, tempo maps, phrase markers, FFmpeg, LUFS, and the tests.
+- [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md) — the preserved post-Slice-2 project tour, now a learning snapshot with relocated links.
+- [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md) — the deep Slice 3 guide: rooms, the queue engine, EF Core, the M1 story, and the phone remote.
 - [`docs/review/slice-1-review.md`](review/slice-1-review.md) — how Slice 1 was reviewed and fixed.
 - [`docs/review/slice-2-review.md`](review/slice-2-review.md) — the browser-stage review and its nit backlog.
 - [`docs/review/slice-3-review.md`](review/slice-3-review.md) — the rooms/queue/remote review, the M1 fix, and the M2–M5 schedule.
