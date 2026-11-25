@@ -11,11 +11,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\apps\Karaokay.Api\Karaokay.Api.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Application\Karaokay.Application.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Contracts\Karaokay.Contracts.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Domain\Karaokay.Domain.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Infrastructure\Karaokay.Infrastructure.csproj" />
     <ProjectReference Include="..\..\tools\Karaokay.SyntheticGen\Karaokay.SyntheticGen.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

@@ -166,8 +166,12 @@ public sealed partial class QueueService
         }
     }
 
-    /// <summary>Moves a queue entry to a new dense position.</summary>
-    public async Task<bool> MoveQueueItemAsync(
+    /// <summary>
+    /// Reorders an upcoming queue entry. <c>Playing</c> and <c>Ended</c> entries are cursor
+    /// history and cannot move; a target above the playing entry is clamped to the first upcoming
+    /// slot so the song plays next instead of being stranded behind the cursor (§5.1).
+    /// </summary>
+    public async Task<QueueMoveResult> MoveQueueItemAsync(
         RoomState room,
         Guid queueItemId,
         int newPosition,
@@ -179,16 +183,16 @@ public sealed partial class QueueService
             List<RoomQueueEntry> updated;
             lock (room.SyncRoot)
             {
-                var entry = room.QueueEntries.FirstOrDefault(item => item.Id == queueItemId);
-                if (entry is null)
+                var result = QueueOrdering.Move(
+                    room.QueueEntries,
+                    queueItemId,
+                    newPosition,
+                    room.CurrentQueueItemId);
+                if (result != QueueMoveResult.Moved)
                 {
-                    return false;
+                    return result;
                 }
 
-                room.QueueEntries.Remove(entry);
-                var target = Math.Clamp(newPosition, 0, room.QueueEntries.Count);
-                room.QueueEntries.Insert(target, entry);
-                RenumberLocked(room.QueueEntries);
                 updated = [.. room.QueueEntries];
             }
 
@@ -199,7 +203,7 @@ public sealed partial class QueueService
                 .QueueChanged(new QueueDelta([], [], [.. updated.Select(ToDto)], sequence))
                 .ConfigureAwait(false);
 
-            return true;
+            return QueueMoveResult.Moved;
         }
         finally
         {
@@ -502,12 +506,8 @@ public sealed partial class QueueService
             current.State = QueueItemState.Ended;
         }
 
-        var next = room.QueueEntries
-            .OrderBy(entry => entry.Position)
-            .FirstOrDefault(entry =>
-                entry != current
-                && (current is null || entry.Position > current.Position)
-                && entry.State is QueueItemState.Ready or QueueItemState.Queued);
+        var ordered = room.QueueEntries.OrderBy(entry => entry.Position).ToList();
+        var next = QueueOrdering.SelectNext(ordered, current);
 
         if (next is null)
         {

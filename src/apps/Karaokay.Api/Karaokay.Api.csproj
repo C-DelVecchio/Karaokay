@@ -35,4 +35,8 @@
     <ProjectReference Include="..\Karaokay.ServiceDefaults\Karaokay.ServiceDefaults.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Karaokay.UnitTests" />
+  </ItemGroup>
+
 </Project>

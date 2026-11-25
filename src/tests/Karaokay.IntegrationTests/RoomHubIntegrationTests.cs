@@ -287,8 +287,148 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         Assert.DoesNotContain(stageErrors.Errors, error => error.Code == HubErrorCodes.ForbiddenRole);
     }
 
+    [SkippableFact]
+    public async Task MovingUpcomingItemAboveCurrentPlaysItNext()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 3).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+
+        var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
+        var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
+        var third = await EnqueueAsync(guest, songIds[2]).ConfigureAwait(false);
+
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+        var started = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(first.QueueItemId, started.Playback.CurrentQueueItemId);
+        Assert.Equal(PlaybackStatus.Playing, started.Status);
+
+        // A guest puts the last song "on top"; it may not land before the playing song or the
+        // cursor would skip it when the current song ends (review M1).
+        await guest.InvokeAsync(MoveQueueItemMethod, third.QueueItemId, 0).ConfigureAwait(false);
+        var moved = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(
+            [first.QueueItemId, third.QueueItemId, second.QueueItemId],
+            moved.Queue.Select(item => item.Id));
+        Assert.Equal(first.QueueItemId, moved.Playback.CurrentQueueItemId);
+
+        await guest.InvokeAsync("SkipSong").ConfigureAwait(false);
+        var afterSkip = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, afterSkip.Status);
+        Assert.Equal(third.QueueItemId, afterSkip.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Playing,
+            afterSkip.Queue.Single(item => item.Id == third.QueueItemId).State);
+        Assert.Equal(
+            QueueItemState.Ready,
+            afterSkip.Queue.Single(item => item.Id == second.QueueItemId).State);
+    }
+
+    [SkippableFact]
+    public async Task MovingThePlayingItemIsRejectedAndAdvanceOrderIsUnchanged()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 2).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+
+        var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
+        var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
+
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+        using var errors = new ErrorCollector(guest);
+
+        await guest.InvokeAsync(MoveQueueItemMethod, first.QueueItemId, 1).ConfigureAwait(false);
+        var error = await errors
+            .WaitForAsync(candidate => candidate.Code == HubErrorCodes.InvalidRequest)
+            .ConfigureAwait(false);
+        Assert.Equal(HubErrorCodes.InvalidRequest, error.Code);
+
+        await guest.InvokeAsync("SkipSong").ConfigureAwait(false);
+        var afterSkip = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, afterSkip.Status);
+        Assert.Equal(second.QueueItemId, afterSkip.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Ended,
+            afterSkip.Queue.Single(item => item.Id == first.QueueItemId).State);
+    }
+
+    [SkippableFact]
+    public async Task PlaybackLifecycleStartsPausesResumesSkipsAndIdles()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 2).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+
+        var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
+        var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
+
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+        var playing = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, playing.Status);
+        Assert.Equal(PlaybackStatus.Playing, playing.Playback.Status);
+        Assert.Equal(first.QueueItemId, playing.Playback.CurrentQueueItemId);
+
+        await guest.InvokeAsync("PausePlayback").ConfigureAwait(false);
+        var paused = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Paused, paused.Status);
+        Assert.Equal(first.QueueItemId, paused.Playback.CurrentQueueItemId);
+
+        await guest.InvokeAsync("ResumePlayback").ConfigureAwait(false);
+        var resumed = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, resumed.Status);
+        Assert.Equal(first.QueueItemId, resumed.Playback.CurrentQueueItemId);
+
+        await guest.InvokeAsync("SkipSong").ConfigureAwait(false);
+        var advanced = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, advanced.Status);
+        Assert.Equal(second.QueueItemId, advanced.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Ended,
+            advanced.Queue.Single(item => item.Id == first.QueueItemId).State);
+        Assert.Equal(
+            QueueItemState.Playing,
+            advanced.Queue.Single(item => item.Id == second.QueueItemId).State);
+
+        await guest.InvokeAsync("SkipSong").ConfigureAwait(false);
+        var idle = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Idle, idle.Status);
+        Assert.Null(idle.Playback.CurrentQueueItemId);
+    }
+
     private void RequireDocker() =>
         Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason ?? "Docker unavailable.");
+
+    private static async Task<QueueAck> EnqueueAsync(HubConnection connection, Guid songId)
+    {
+        var ack = await connection
+            .InvokeAsync<QueueAck>(EnqueueLibrarySongMethod, songId)
+            .ConfigureAwait(false);
+        Assert.True(ack.Success);
+        return ack;
+    }
+
+    private static async Task<RoomSnapshot> GetSnapshotAsync(HttpClient http, string roomCode)
+    {
+        var snapshot = await http
+            .GetFromJsonAsync<RoomSnapshot>($"/api/rooms/{roomCode}")
+            .ConfigureAwait(false);
+        return Assert.IsType<RoomSnapshot>(snapshot);
+    }
 
     private async Task<HubConnection> ConnectAsync()
     {

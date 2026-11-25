@@ -1,4 +1,5 @@
 import type { QueueItemDto, QueueItemState, SongSummaryDto } from '../../lib/signalr/protocol';
+import { firstMovableIndex, isQueueItemMovable } from './queueOrdering';
 
 const STATE_LABELS: Record<QueueItemState, string> = {
   0: 'Queued',
@@ -38,12 +39,15 @@ export function QueueList({ queue, songs, disabled = false, onMove, onRemove }: 
     );
   }
 
+  const movableFrom = firstMovableIndex(queue);
+
   return (
     <section className="remote-panel" aria-labelledby="queue-heading">
       <h2 id="queue-heading">Queue</h2>
       <ol className="queue-list">
         {queue.map((item, index) => {
           const label = titles.get(item.songId) ?? `Song ${item.songId.slice(0, 8)}`;
+          const movable = isQueueItemMovable(item.state);
           return (
             <li key={item.id} className="queue-row" data-state={item.state}>
               <div className="queue-meta">
@@ -58,7 +62,7 @@ export function QueueList({ queue, songs, disabled = false, onMove, onRemove }: 
                   type="button"
                   className="remote-icon"
                   aria-label={`Move ${label} up`}
-                  disabled={disabled || index === 0}
+                  disabled={disabled || !movable || index <= movableFrom}
                   onClick={() => {
                     void onMove(item.id, item.position - 1);
                   }}
@@ -69,7 +73,7 @@ export function QueueList({ queue, songs, disabled = false, onMove, onRemove }: 
                   type="button"
                   className="remote-icon"
                   aria-label={`Move ${label} down`}
-                  disabled={disabled || index === queue.length - 1}
+                  disabled={disabled || !movable || index === queue.length - 1}
                   onClick={() => {
                     void onMove(item.id, item.position + 1);
                   }}

@@ -169,11 +169,22 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     public async Task MoveQueueItem(Guid queueItemId, int newPosition)
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        if (!await _queue.MoveQueueItemAsync(room, queueItemId, newPosition, CancellationToken.None)
-                .ConfigureAwait(false))
+        var result = await _queue
+            .MoveQueueItemAsync(room, queueItemId, newPosition, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        switch (result)
         {
-            await SendErrorAsync(HubErrorCodes.NotFound, "That queue item no longer exists.")
-                .ConfigureAwait(false);
+            case QueueMoveResult.NotFound:
+                await SendErrorAsync(HubErrorCodes.NotFound, "That queue item no longer exists.")
+                    .ConfigureAwait(false);
+                break;
+            case QueueMoveResult.NotMovable:
+                await SendErrorAsync(
+                        HubErrorCodes.InvalidRequest,
+                        "Only upcoming songs can be reordered.")
+                    .ConfigureAwait(false);
+                break;
         }
     }
 
