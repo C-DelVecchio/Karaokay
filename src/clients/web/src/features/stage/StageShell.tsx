@@ -5,6 +5,8 @@ import { findLeadInGap } from './lyrics';
 import { CanvasLyricsRenderer } from './renderer/CanvasLyricsRenderer';
 import { StageRoomPanel } from './StageRoomPanel';
 import { useStageClock } from './useStageClock';
+import { useStageRoom } from './useStageRoom';
+import { useStageVideo } from './useStageVideo';
 import { stageTestClock, WebAudioEngine } from './WebAudioEngine';
 
 /**
@@ -38,6 +40,7 @@ export function StageShell() {
   const [guideVolume, setGuideVolume] = useState(() => engine.gains().guide);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [audioGateMessage, setAudioGateMessage] = useState<string | null>(null);
+  const [audioUnlocked, setAudioUnlocked] = useState(() => engine.unlocked);
 
   const tokenRef = useRef(0);
   const phaseRef = useRef<StagePhase>('picking');
@@ -45,6 +48,17 @@ export function StageShell() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<CanvasLyricsRenderer | null>(null);
   const subscribeStageClock = useStageClock(engine);
+  const { status: roomStatus, room, reportSongEnded } = useStageRoom();
+  const playback = room.playback ?? room.snapshot?.playback ?? null;
+  const video = useStageVideo({
+    playback,
+    audioUnlocked,
+    engine,
+    onSongEnded: (queueItemId) => {
+      void reportSongEnded(queueItemId);
+    },
+  });
+  const videoMode = video.mode === 'video';
 
   phaseRef.current = phase;
 
@@ -63,6 +77,21 @@ export function StageShell() {
       engine.stop();
     };
   }, []);
+
+  // Entering video mode owns the stage: stop any local demo stems first so a room YouTube item
+  // never overlaps the demo picker's audio. The demo picker/phase return untouched afterwards.
+  useEffect(() => {
+    if (!videoMode) {
+      return;
+    }
+
+    tokenRef.current += 1;
+    engine.stop();
+    setSelection(null);
+    setCountdown(null);
+    setPhase('picking');
+    rendererRef.current?.clear();
+  }, [videoMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -101,9 +130,12 @@ export function StageShell() {
 
   const handleEnableAudio = () => {
     setAudioGateMessage(null);
+    // Start a waiting video (muted, autoplay-safe) inside the same gesture that unlocks Web Audio.
+    video.primeForUnlock();
     void engine.unlock()
       .then(() => {
         audioUnlockAcknowledged = true;
+        setAudioUnlocked(true);
         setAudioGateVisible(false);
       })
       .catch(() => {
@@ -113,7 +145,7 @@ export function StageShell() {
   };
 
   const handlePick = (song: PickedDemoTrack) => {
-    if (!engine.unlocked) {
+    if (!engine.unlocked || videoMode) {
       return;
     }
 
@@ -217,9 +249,22 @@ export function StageShell() {
   }, [selection]);
 
   return (
-    <main className="stage" data-phase={phase}>
-      {/* Reserved for Slice 4 video mode: present but completely inert in Slice 2. */}
-      <div id="video-surface" data-mode="placeholder" aria-hidden="true" />
+    <main className="stage" data-phase={phase} data-video={videoMode ? 'true' : 'false'}>
+      {/*
+        One persistent video element for the whole page session. It is never recreated, so the
+        single MediaElementAudioSourceNode created on unlock stays valid across songs.
+      */}
+      <video
+        id="video-surface"
+        ref={video.videoRef}
+        data-mode={video.mode}
+        data-song-id={video.songId ?? undefined}
+        className="stage-video"
+        playsInline
+        muted
+        preload="auto"
+        aria-hidden={!videoMode}
+      />
 
       <canvas
         id="stage-canvas"
@@ -245,10 +290,27 @@ export function StageShell() {
 
       <header className="stage-header">
         <h1>Karaokay Stage</h1>
-        {phase === 'playing' && selection && <p className="stage-now-playing">{selection.song.lyrics.title}</p>}
+        {videoMode && playback?.currentSong && (
+          <p className="stage-now-playing">{playback.currentSong.title}</p>
+        )}
+        {!videoMode && phase === 'playing' && selection && (
+          <p className="stage-now-playing">{selection.song.lyrics.title}</p>
+        )}
       </header>
 
-      <StageRoomPanel />
+      <StageRoomPanel status={roomStatus} room={room} />
+
+      {videoMode && video.notice && (
+        <div className="stage-video-notice" role="alert">
+          <span>{video.notice}</span>
+          <button type="button" className="remote-secondary" onClick={video.retryPlayback}>
+            Start video
+          </button>
+          <button type="button" className="remote-link" onClick={video.dismissNotice}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {loadError && (
         <p className="stage-error" role="alert">
@@ -268,7 +330,7 @@ export function StageShell() {
         </section>
       )}
 
-      {phase === 'playing' && selection && (
+      {!videoMode && phase === 'playing' && selection && (
         <section className="stage-transport">
           <label htmlFor="guide-vocals">Guide vocals</label>
           <input
@@ -287,7 +349,7 @@ export function StageShell() {
         </section>
       )}
 
-      {(phase === 'picking' || phase === 'ended') && (
+      {!videoMode && (phase === 'picking' || phase === 'ended') && (
         <>
           {phase === 'ended' && <p className="stage-complete">Song complete — pick another!</p>}
           <DemoTrackPicker

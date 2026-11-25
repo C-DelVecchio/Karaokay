@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
@@ -5,6 +6,15 @@ const port = 4173;
 const baseURL = `http://127.0.0.1:${port}`;
 const apiURL = 'http://127.0.0.1:5255';
 const mediaRoot = path.resolve(import.meta.dirname, 'public', 'demo-tracks');
+// Each Playwright run gets a fresh cache/channel so the YouTube spec always observes a real
+// Queued → % → Ready progression instead of a stale cache hit from a previous local run.
+// The cache lives OUTSIDE the media root, mirroring Development/Aspire and guarding the
+// CachePath-relative-to-CacheDirectory convention end-to-end in no-database mode.
+const runStamp = `${process.pid}-${Date.now()}`;
+const ytCacheRoot = path.join(os.tmpdir(), 'karaokay-e2e');
+const ytCacheDirectory = path.join(ytCacheRoot, `ytcache-${runStamp}`);
+const ytStagingRoot = path.join(ytCacheRoot, `staging-${runStamp}`);
+const ytDlpShim = path.resolve(import.meta.dirname, 'e2e', 'fixtures', 'yt-dlp-shim.mjs');
 
 export default defineConfig({
   testDir: './e2e',
@@ -48,6 +58,13 @@ export default defineConfig({
         ASPNETCORE_ENVIRONMENT: 'Development',
         // Absolute so the API content root / shell working directory can never change the library.
         MediaRoot: mediaRoot,
+        // Slice 5: the UI talks to a deterministic local yt-dlp shim — no network, no real binary.
+        Features__EnableYouTubeIngestion: 'true',
+        YtDlp__ExecutablePath: ytDlpShim,
+        YtDlp__CacheDirectory: ytCacheDirectory,
+        YtDlp__StagingRoot: ytStagingRoot,
+        YtDlp__RetryBackoffSeconds: '0',
+        YtDlp__MaxAttempts: '1',
       },
     },
     {

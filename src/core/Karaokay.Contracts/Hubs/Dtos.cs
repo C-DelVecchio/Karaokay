@@ -88,6 +88,12 @@ public static class HubErrorCodes
     /// <summary>The referenced song or queue item does not exist.</summary>
     public const string NotFound = "NotFound";
 
+    /// <summary>
+    /// A YouTube download could not be attached to a live job (coalescing race); the queue row was
+    /// marked <c>Failed</c> and the guest may retry.
+    /// </summary>
+    public const string DownloadUnavailable = "DownloadUnavailable";
+
     /// <summary>The operation is valid but not implemented in this slice/build.</summary>
     public const string NotImplemented = "NotImplemented";
 }
@@ -131,6 +137,12 @@ public sealed record DownloadProgressDto(
     double Percent,
     double BytesPerSec,
     double EtaSec);
+
+/// <summary>A YouTube item finished downloading and its media file is on disk (Slice 5).</summary>
+public sealed record SongReadyDto(Guid QueueItemId, Guid SongId);
+
+/// <summary>A YouTube item failed after the retry budget and will not become playable (Slice 5).</summary>
+public sealed record DownloadFailedDto(Guid QueueItemId, Guid SongId, string Reason);
 
 /// <summary>Count-in progress pushed to phones while the stage runs its lead-in.</summary>
 public sealed record CountdownDto(Guid QueueItemId, int RemainingBeats, double BeatMs);

@@ -11,12 +11,23 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { chmodSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 const webRoot = path.resolve(import.meta.dirname, '..');
 const fallbackLibDir = '/tmp/opencode/pw-libs/root/usr/lib/x86_64-linux-gnu';
 const env = { ...process.env };
+
+// The Playwright webServer executes the deterministic yt-dlp shim directly. Keep it executable even
+// if the checkout/tooling dropped the mode bit (git also stores it, but this is belt and braces).
+const ytDlpShim = path.join(webRoot, 'e2e', 'fixtures', 'yt-dlp-shim.mjs');
+if (process.platform !== 'win32' && existsSync(ytDlpShim)) {
+  try {
+    chmodSync(ytDlpShim, 0o755);
+  } catch (error) {
+    console.warn('[run-e2e] could not make the yt-dlp shim executable:', error);
+  }
+}
 
 if (existsSync(fallbackLibDir)) {
   const currentParts = (env.LD_LIBRARY_PATH ?? '').split(path.delimiter).filter(Boolean);

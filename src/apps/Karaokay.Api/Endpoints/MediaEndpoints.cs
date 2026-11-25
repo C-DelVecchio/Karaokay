@@ -7,13 +7,15 @@ namespace Karaokay.Api.Endpoints;
 /// Range-enabled media delivery (docs/ARCHITECTURE.md §7, Slice 2). Content is immutable per song
 /// id, so responses are cacheable for a day. Ids are resolved through <see cref="SongCatalog"/>:
 /// canonical GUID ids map to stored song paths in database mode, while the no-database fallback
-/// keeps the Slice 2 directory whitelist. Paths always stay under the media root.
+/// keeps the Slice 2 directory whitelist. Paths always stay under a trusted root: the media root,
+/// or the configured YouTube cache directory for cached videos.
 /// </summary>
 public static class MediaEndpoints
 {
     private const string ImmutableCacheControl = "public, max-age=86400, immutable";
     private const string OpusContentType = "audio/ogg";
     private const string LyricsContentType = "application/json; charset=utf-8";
+    private const string Mp4ContentType = "video/mp4";
 
     public static IEndpointRouteBuilder MapMediaEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -48,6 +50,20 @@ public static class MediaEndpoints
                     songId,
                     MediaLibrary.LyricsFile,
                     LyricsContentType,
+                    catalog,
+                    context,
+                    cancellationToken));
+
+        // Cached YouTube media for the stage <video> element. Path resolution uses the same
+        // traversal discipline as the multitrack stems but treats YtDlp.CacheDirectory as the
+        // trusted root for Song.CachePath (traversal escapes are rejected).
+        songs.MapGet(
+            "/{songId}/video",
+            (string songId, SongCatalog catalog, HttpContext context, CancellationToken cancellationToken) =>
+                ServeAsync(
+                    songId,
+                    MediaLibrary.VideoFile,
+                    Mp4ContentType,
                     catalog,
                     context,
                     cancellationToken));

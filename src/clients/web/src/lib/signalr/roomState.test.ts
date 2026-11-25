@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { QueueDelta, QueueItemDto, RoomSnapshot } from './protocol';
-import { PlaybackStatus, QueueItemState } from './protocol';
+import { DownloadStage, PlaybackStatus, QueueItemState } from './protocol';
 import {
   applyDelta,
+  applyDownloadFailed,
+  applyDownloadProgress,
   applyPlayback,
+  applyQueueItemState,
   applySnapshot,
+  applySongReady,
   createEmptyRoomState,
 } from './roomState';
 
@@ -116,6 +120,153 @@ describe('applyDelta', () => {
 
     expect(result.queue.map((item) => item.id)).toEqual([firstItem.id]);
     expect(result.queueSequence).toBe(1);
+  });
+});
+
+describe('YouTube download state', () => {
+  const downloading: QueueItemDto = {
+    ...firstItem,
+    state: QueueItemState.Downloading,
+  };
+
+  function downloadingState() {
+    return applySnapshot(createEmptyRoomState(), {
+      ...snapshot,
+      queue: [downloading, secondItem],
+    });
+  }
+
+  it('tracks live progress percent and promotes the row to Downloading', () => {
+    const initial = applySnapshot(createEmptyRoomState(), {
+      ...snapshot,
+      queue: [{ ...downloading, state: QueueItemState.Queued }, secondItem],
+    });
+
+    const progress = applyDownloadProgress(initial, {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+      stage: DownloadStage.Downloading,
+      percent: 42.4,
+      bytesPerSec: 1_000,
+      etaSec: 9,
+    });
+
+    expect(progress.downloads[firstItem.id]).toMatchObject({
+      stage: DownloadStage.Downloading,
+      percent: 42.4,
+      ready: false,
+      failureReason: null,
+    });
+    expect(progress.queue[0]?.state).toBe(QueueItemState.Downloading);
+    expect(progress.snapshot?.queue[0]?.state).toBe(QueueItemState.Downloading);
+  });
+
+  it('marks a row ready at 100% from SongReady', () => {
+    const progress = applyDownloadProgress(downloadingState(), {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+      stage: DownloadStage.Downloading,
+      percent: 80,
+      bytesPerSec: 0,
+      etaSec: 1,
+    });
+
+    const ready = applySongReady(progress, {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+    });
+
+    expect(ready.downloads[firstItem.id]).toMatchObject({
+      stage: DownloadStage.Completed,
+      percent: 100,
+      ready: true,
+      cached: false,
+      failureReason: null,
+    });
+    expect(ready.queue[0]?.state).toBe(QueueItemState.Ready);
+  });
+
+  it('treats a snapshot Ready row as a cache hit when no progress ever arrived', () => {
+    const initial = applySnapshot(createEmptyRoomState(), {
+      ...snapshot,
+      queue: [{ ...firstItem, state: QueueItemState.Queued }, secondItem],
+    });
+
+    const state = applyQueueItemState(initial, firstItem.id, QueueItemState.Ready);
+
+    expect(state.downloads[firstItem.id]).toMatchObject({
+      ready: true,
+      cached: true,
+      percent: 100,
+    });
+  });
+
+  it('keeps the failure reason and supports retrying into a fresh row', () => {
+    const initial = applyDownloadProgress(downloadingState(), {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+      stage: DownloadStage.Downloading,
+      percent: 55,
+      bytesPerSec: 0,
+      etaSec: 3,
+    });
+
+    const failed = applyDownloadFailed(initial, {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+      reason: 'yt-dlp exited with code 1',
+    });
+
+    expect(failed.downloads[firstItem.id]).toMatchObject({
+      stage: DownloadStage.Failed,
+      ready: false,
+      failureReason: 'yt-dlp exited with code 1',
+    });
+    expect(failed.queue[0]?.state).toBe(QueueItemState.Failed);
+
+    // Retry enqueues a NEW queue item; both states coexist until the failed row is removed.
+    const retriedId = '77777777-7777-4777-8777-777777777777';
+    const retried = applyDelta(failed, delta({
+      sequence: 5,
+      added: [{
+        id: retriedId,
+        songId: firstItem.songId,
+        position: 2,
+        requestedByName: 'Ada',
+        state: QueueItemState.Downloading,
+      }],
+    }));
+    const retriedProgress = applyDownloadProgress(retried, {
+      queueItemId: retriedId,
+      songId: firstItem.songId,
+      stage: DownloadStage.Downloading,
+      percent: 5,
+      bytesPerSec: 0,
+      etaSec: 30,
+    });
+
+    expect(retriedProgress.downloads[retriedId]?.percent).toBe(5);
+    expect(retriedProgress.downloads[firstItem.id]?.stage).toBe(DownloadStage.Failed);
+    expect(retriedProgress.queue.map((item) => item.state)).toEqual([
+      QueueItemState.Failed,
+      QueueItemState.Ready,
+      QueueItemState.Downloading,
+    ]);
+  });
+
+  it('drops stale download entries when the queue removes the row', () => {
+    const initial = applyDownloadFailed(downloadingState(), {
+      queueItemId: firstItem.id,
+      songId: firstItem.songId,
+      reason: 'nope',
+    });
+
+    const removed = applyDelta(
+      initial,
+      delta({ sequence: 5, removed: [firstItem.id] }),
+    );
+
+    expect(removed.downloads[firstItem.id]).toBeUndefined();
   });
 });
 

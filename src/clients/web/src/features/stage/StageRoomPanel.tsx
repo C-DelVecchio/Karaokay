@@ -1,14 +1,22 @@
 import { useEffect, useState } from 'react';
 import type { SongSummaryDto } from '../../lib/signalr/protocol';
-import { useStageRoom } from './useStageRoom';
+import type { RemoteRoomState } from '../../lib/signalr/roomState';
+import type { StageRoomStatus } from './useStageRoom';
+
+interface StageRoomPanelProps {
+  status: StageRoomStatus;
+  room: RemoteRoomState;
+}
 
 /**
  * Small live-room overlay for the TV/browser stage. Renders nothing unless a room was created or
  * joined successfully, which keeps the offline Slice 2 demo (and its e2e specs) byte-for-byte
  * unchanged when no API is running.
+ *
+ * The room connection itself is owned by `StageShell` (which needs playback for video mode) and
+ * passed in, so there is exactly one stage hub connection per page.
  */
-export function StageRoomPanel() {
-  const { status, room } = useStageRoom();
+export function StageRoomPanel({ status, room }: StageRoomPanelProps) {
   const snapshot = room.snapshot;
   const [titles, setTitles] = useState<Record<string, string>>({});
   const roomCode = snapshot?.roomCode;

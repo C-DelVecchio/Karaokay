@@ -5,6 +5,8 @@
 using Karaokay.Api.Endpoints;
 using Karaokay.Api.Features;
 using Karaokay.Api.Hubs;
+using Karaokay.Application.Downloads;
+using Karaokay.Infrastructure.MediaIngest;
 using Karaokay.Infrastructure.Persistence;
 using Karaokay.ServiceDefaults;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -17,11 +19,18 @@ builder.AddKaraokayServiceDefaults();
 builder.Services.Configure<MediaLibraryOptions>(builder.Configuration);
 builder.Services.Configure<FeatureOptions>(
     builder.Configuration.GetSection(FeatureOptions.SectionName));
+builder.Services.Configure<YtDlpOptions>(
+    builder.Configuration.GetSection(YtDlpOptions.SectionName));
 builder.Services.AddSingleton<MediaLibrary>();
 builder.Services.AddSingleton<SongCatalog>();
 builder.Services.AddSingleton<RoomRegistry>();
 builder.Services.AddSingleton<RoomService>();
 builder.Services.AddSingleton<QueueService>();
+builder.Services.AddSingleton<IYouTubeService, YtDlpClient>();
+builder.Services.AddSingleton<DownloadJobChannel>();
+builder.Services.AddSingleton<DownloadJobCoordinator>();
+builder.Services.AddSingleton<YouTubeIngestionService>();
+builder.Services.AddHostedService<MediaDownloadWorker>();
 
 builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
@@ -59,6 +68,7 @@ app.MapOpenApi();
 app.MapSongsEndpoints();
 app.MapMediaEndpoints();
 app.MapRoomsEndpoints();
+app.MapYouTubeEndpoints();
 app.MapHub<StageHub>("/hubs/stage");
 
 app.Services.GetRequiredService<MediaLibrary>().LogResolvedRoot();

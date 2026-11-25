@@ -64,6 +64,8 @@ export const CLIENT_METHODS = {
   QueueChanged: 'QueueChanged',
   QueueItemStateChanged: 'QueueItemStateChanged',
   DownloadProgressChanged: 'DownloadProgressChanged',
+  SongReady: 'SongReady',
+  DownloadFailed: 'DownloadFailed',
   PlaybackChanged: 'PlaybackChanged',
   CountdownTicked: 'CountdownTicked',
   LyricsLoaded: 'LyricsLoaded',
@@ -129,6 +131,7 @@ export const HUB_ERROR_CODES = {
   InvalidRequest: 'InvalidRequest',
   YouTubeDisabled: 'YouTubeDisabled',
   NotFound: 'NotFound',
+  DownloadUnavailable: 'DownloadUnavailable',
   NotImplemented: 'NotImplemented',
 } as const;
 
@@ -244,6 +247,17 @@ export interface DownloadProgressDto {
   percent: number;
   bytesPerSec: number;
   etaSec: number;
+}
+
+export interface SongReadyDto {
+  queueItemId: string;
+  songId: string;
+}
+
+export interface DownloadFailedDto {
+  queueItemId: string;
+  songId: string;
+  reason: string;
 }
 
 export interface CountdownDto {

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  enqueueYouTube,
+  getYouTubeRequest,
+  YouTubeApiError,
+  type YouTubeSearchResult,
+} from '../../lib/api/youtube';
 import type {
   HubErrorDto,
   JoinAck,
@@ -7,9 +13,13 @@ import type {
 } from '../../lib/signalr/protocol';
 import {
   applyDelta,
+  applyDownloadFailed,
+  applyDownloadProgress,
   applyGuestCount,
   applyPlayback,
+  applyQueueItemState,
   applySnapshot,
+  applySongReady,
   createEmptyRoomState,
   type RemoteRoomState,
 } from '../../lib/signalr/roomState';
@@ -19,10 +29,13 @@ export interface StageClientApi {
   state: RemoteRoomState;
   status: StageConnectionStatus;
   error: HubErrorDto | null;
+  displayName: string;
   clearError: () => void;
   join: (roomCode: string, displayName: string) => Promise<JoinAck>;
   restart: () => Promise<void>;
   enqueueLibrarySong: (songId: string) => Promise<QueueAck>;
+  enqueueYouTubeSong: (result: YouTubeSearchResult) => Promise<QueueAck>;
+  retryYouTubeSong: (queueItemId: string) => Promise<QueueAck>;
   removeQueueItem: (queueItemId: string) => Promise<void>;
   moveQueueItem: (queueItemId: string, newPosition: number) => Promise<void>;
   startPlayback: () => Promise<void>;
@@ -55,11 +68,22 @@ export function useStageClient(): StageClientApi {
   const [state, setState] = useState<RemoteRoomState>(createEmptyRoomState);
   const [status, setStatus] = useState<StageConnectionStatus>('idle');
   const [error, setError] = useState<HubErrorDto | null>(null);
+  const [displayName, setDisplayName] = useState('Guest');
+  const roomCodeRef = useRef<string | null>(null);
 
   useEffect(() => {
     client.setHandlers({
-      onJoinedRoom: (snapshot) => setState((current) => applySnapshot(current, snapshot)),
+      onJoinedRoom: (snapshot) => {
+        roomCodeRef.current = snapshot.roomCode;
+        setState((current) => applySnapshot(current, snapshot));
+      },
       onQueueChanged: (delta) => setState((current) => applyDelta(current, delta)),
+      onQueueItemStateChanged: (queueItemId, itemState) =>
+        setState((current) => applyQueueItemState(current, queueItemId, itemState)),
+      onDownloadProgressChanged: (progress) =>
+        setState((current) => applyDownloadProgress(current, progress)),
+      onSongReady: (ready) => setState((current) => applySongReady(current, ready)),
+      onDownloadFailed: (failed) => setState((current) => applyDownloadFailed(current, failed)),
       onPlaybackChanged: (playback) => setState((current) => applyPlayback(current, playback)),
       onParticipantJoined: (_displayName, guestCount) =>
         setState((current) => applyGuestCount(current, guestCount)),
@@ -81,7 +105,9 @@ export function useStageClient(): StageClientApi {
       setError(null);
       try {
         const ack = await client.join(roomCode, displayName, 'guest');
-        if (!ack.success) {
+        if (ack.success) {
+          setDisplayName(displayName.trim() || 'Guest');
+        } else {
           setError({
             code: ack.reason ?? 'JoinFailed',
             message: ack.reason === 'RoomNotFound'
@@ -121,6 +147,49 @@ export function useStageClient(): StageClientApi {
     [client],
   );
 
+  const enqueueYouTubeSong = useCallback(
+    async (result: YouTubeSearchResult): Promise<QueueAck> => {
+      const roomCode = roomCodeRef.current;
+      if (!roomCode) {
+        throw new YouTubeApiError('not-found', 'Join a room before adding a video.');
+      }
+
+      return enqueueYouTube({
+        roomCode,
+        requestedByName: displayName,
+        videoId: result.videoId,
+        title: result.title,
+        channel: result.channel,
+        durationSeconds: Number(result.durationSeconds) || 0,
+        thumbnailUrl: result.thumbnailUrl,
+      });
+    },
+    [displayName],
+  );
+
+  const retryYouTubeSong = useCallback(
+    async (queueItemId: string): Promise<QueueAck> => {
+      const remembered = getYouTubeRequest(queueItemId);
+      const roomCode = roomCodeRef.current;
+      if (!remembered || !roomCode) {
+        throw new YouTubeApiError(
+          'invalid',
+          'This video can no longer be retried from here — search for it again.',
+        );
+      }
+
+      // Intended UX: guest Retry enqueues a brand-new queue row for the same video. The old
+      // Failed row deliberately remains so the room keeps a visible record of the failed attempt
+      // (and so the download badge/progress state stays attached to the row that produced it).
+      return enqueueYouTube({
+        ...remembered,
+        roomCode,
+        requestedByName: remembered.requestedByName || displayName,
+      });
+    },
+    [displayName],
+  );
+
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
     setError(null);
     try {
@@ -151,10 +220,13 @@ export function useStageClient(): StageClientApi {
     state,
     status,
     error,
+    displayName,
     clearError: () => setError(null),
     join,
     restart,
     enqueueLibrarySong,
+    enqueueYouTubeSong,
+    retryYouTubeSong,
     removeQueueItem,
     moveQueueItem,
     startPlayback,

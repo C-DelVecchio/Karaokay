@@ -335,6 +335,10 @@ public sealed class QueueServiceTests
         public Task DownloadProgressChanged(DownloadProgressDto dto) =>
             Record(nameof(DownloadProgressChanged));
 
+        public Task SongReady(SongReadyDto dto) => Record(nameof(SongReady));
+
+        public Task DownloadFailed(DownloadFailedDto dto) => Record(nameof(DownloadFailed));
+
         public Task PlaybackChanged(PlaybackStateDto dto)
         {
             PlaybackStates.Add(dto);

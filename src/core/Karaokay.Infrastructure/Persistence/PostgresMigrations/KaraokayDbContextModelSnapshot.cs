@@ -22,6 +22,53 @@ namespace Karaokay.Infrastructure.Persistence.PostgresMigrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Karaokay.Domain.DownloadJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<double>("ProgressPercent")
+                        .HasColumnType("double precision");
+
+                    b.Property<Guid?>("QueueItemId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SongId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Stage")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("VideoId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("QueueItemId");
+
+                    b.HasIndex("SongId");
+
+                    b.HasIndex("VideoId");
+
+                    b.ToTable("DownloadJobs", (string)null);
+                });
+
             modelBuilder.Entity("Karaokay.Domain.PartyRoom", b =>
                 {
                     b.Property<Guid>("Id")
@@ -177,6 +224,17 @@ namespace Karaokay.Infrastructure.Persistence.PostgresMigrations
                         .HasFilter("\"VideoId\" IS NOT NULL");
 
                     b.ToTable("Songs", (string)null);
+                });
+
+            modelBuilder.Entity("Karaokay.Domain.DownloadJob", b =>
+                {
+                    b.HasOne("Karaokay.Domain.Song", "Song")
+                        .WithMany()
+                        .HasForeignKey("SongId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Song");
                 });
 
             modelBuilder.Entity("Karaokay.Domain.QueueItem", b =>

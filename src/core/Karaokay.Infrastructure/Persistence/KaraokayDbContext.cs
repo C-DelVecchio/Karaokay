@@ -31,6 +31,9 @@ public sealed class KaraokayDbContext : DbContext
     /// <summary>Queue entries, densely ordered per room.</summary>
     public DbSet<QueueItem> QueueItems => Set<QueueItem>();
 
+    /// <summary>YouTube ingestion jobs and their progress (docs/ARCHITECTURE.md §4.2).</summary>
+    public DbSet<DownloadJob> DownloadJobs => Set<DownloadJob>();
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         ArgumentNullException.ThrowIfNull(optionsBuilder);
@@ -45,6 +48,7 @@ public sealed class KaraokayDbContext : DbContext
         ConfigureSong(modelBuilder);
         ConfigurePartyRoom(modelBuilder);
         ConfigureQueueItem(modelBuilder);
+        ConfigureDownloadJob(modelBuilder);
     }
 
     private void ConfigureSong(ModelBuilder modelBuilder)
@@ -100,6 +104,24 @@ public sealed class KaraokayDbContext : DbContext
         item.HasIndex(entity => entity.SongId);
 
         item.HasOne(entity => entity.Song)
+            .WithMany()
+            .HasForeignKey(entity => entity.SongId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureDownloadJob(ModelBuilder modelBuilder)
+    {
+        var job = modelBuilder.Entity<DownloadJob>();
+        job.ToTable("DownloadJobs");
+        job.HasKey(entity => entity.Id);
+
+        job.Property(entity => entity.VideoId).IsRequired().HasMaxLength(64);
+        job.Property(entity => entity.FailureReason).HasMaxLength(1024);
+        job.HasIndex(entity => entity.VideoId);
+        job.HasIndex(entity => entity.SongId);
+        job.HasIndex(entity => entity.QueueItemId);
+
+        job.HasOne(entity => entity.Song)
             .WithMany()
             .HasForeignKey(entity => entity.SongId)
             .OnDelete(DeleteBehavior.Restrict);

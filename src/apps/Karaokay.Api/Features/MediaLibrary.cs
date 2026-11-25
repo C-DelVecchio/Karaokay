@@ -16,6 +16,14 @@ public sealed partial class MediaLibrary
     public const string LyricsFile = "lyrics.json";
 
     /// <summary>
+    /// Pseudo file name used by <see cref="SongCatalog.ResolveMediaFileAsync"/> for the cached
+    /// YouTube MP4. The real path comes from <c>Song.CachePath</c>, which is relative to the
+    /// configured YouTube cache directory; this token only selects which column to serve and is
+    /// never concatenated into a filesystem path.
+    /// </summary>
+    public const string VideoFile = "video.mp4";
+
+    /// <summary>
     /// Media range requests arrive in bursts; re-parsing every lyrics.json per chunk is wasteful.
     /// A one-second snapshot keeps sequential chunk reads cheap while still noticing library edits.
     /// </summary>

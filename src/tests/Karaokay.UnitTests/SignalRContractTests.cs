@@ -41,7 +41,7 @@ public sealed class SignalRContractTests
         var csharpMethods = InterfaceMethodNames(typeof(IStageHubClient));
         var typescriptMethods = ParseConstObject(ReadProtocol(), "CLIENT_METHODS");
 
-        Assert.Equal(12, csharpMethods.Count);
+        Assert.Equal(14, csharpMethods.Count);
         Assert.Equal(
             csharpMethods.OrderBy(name => name, StringComparer.Ordinal),
             typescriptMethods.Values.OrderBy(name => name, StringComparer.Ordinal));
@@ -91,6 +91,26 @@ public sealed class SignalRContractTests
         var typescriptConstants = ParseConstObject(ReadProtocol(), "RoomCommandTypes");
 
         Assert.Equal(12, csharpConstants.Count);
+        Assert.Equal(
+            csharpConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal),
+            typescriptConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal));
+        Assert.All(typescriptConstants, pair => Assert.Equal(pair.Key, pair.Value));
+    }
+
+    [Fact]
+    public void HubErrorCodesMatchTheTypeScriptMirror()
+    {
+        var csharpConstants = typeof(HubErrorCodes)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(field => field is { IsLiteral: true, IsInitOnly: false }
+                && field.FieldType == typeof(string))
+            .ToDictionary(
+                field => field.Name,
+                field => (string)field.GetRawConstantValue()!,
+                StringComparer.Ordinal);
+
+        var typescriptConstants = ParseConstObject(ReadProtocol(), "HUB_ERROR_CODES");
+
         Assert.Equal(
             csharpConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal),
             typescriptConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal));

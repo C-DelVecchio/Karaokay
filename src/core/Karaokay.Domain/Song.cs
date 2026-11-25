@@ -40,7 +40,11 @@ public class Song
     /// <summary>Timeline path relative to <c>MediaRoot</c>.</summary>
     public string? LyricsPath { get; set; }
 
-    /// <summary>YouTube cache path relative to <c>MediaRoot</c>; null for multitrack source.</summary>
+    /// <summary>
+    /// YouTube only: cache filename/path relative to <c>YtDlpOptions.CacheDirectory</c> (normally
+    /// <c>{videoId}.mp4</c>), never relative to the media root. Multitrack source leaves this null and
+    /// stores its stems in the <c>*Path</c> columns above relative to <c>MediaRoot</c>.
+    /// </summary>
     public string? CachePath { get; set; }
 
     /// <summary>Cached media size in bytes, when known.</summary>

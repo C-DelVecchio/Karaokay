@@ -236,6 +236,23 @@ public sealed class RoomRegistry
     public RoomState? Find(string code) =>
         _rooms.GetValueOrDefault(code.ToUpperInvariant());
 
+    /// <summary>
+    /// Finds the live room that owns a queue entry. Used by the download worker to recover the
+    /// broadcast group from a persisted <c>DownloadJob.QueueItemId</c>.
+    /// </summary>
+    public RoomState? FindByQueueItemId(Guid queueItemId)
+    {
+        foreach (var room in _rooms.Values)
+        {
+            if (room.FindQueueEntry(queueItemId) is not null)
+            {
+                return room;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Removes a room (used when database persistence proves the code collided).</summary>
     public bool Remove(string code) => _rooms.TryRemove(code, out _);
 

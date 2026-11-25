@@ -18,9 +18,13 @@ import {
   type Pong,
   type QueueAck,
   type QueueDelta,
+  type QueueItemState,
   type RoomSnapshot,
   type StageCapabilities,
   type StageConnectionStatus,
+  type DownloadFailedDto,
+  type DownloadProgressDto,
+  type SongReadyDto,
   type YouTubeQueueRequest,
   type YouTubeSearchResultDto,
 } from './protocol';
@@ -29,6 +33,10 @@ import { decideReconnectAction, shouldAcceptDelta } from './sync';
 export interface StageClientHandlers {
   onJoinedRoom?: (snapshot: RoomSnapshot) => void;
   onQueueChanged?: (delta: QueueDelta) => void;
+  onQueueItemStateChanged?: (queueItemId: string, state: QueueItemState) => void;
+  onDownloadProgressChanged?: (progress: DownloadProgressDto) => void;
+  onSongReady?: (ready: SongReadyDto) => void;
+  onDownloadFailed?: (failed: DownloadFailedDto) => void;
   onPlaybackChanged?: (playback: PlaybackStateDto) => void;
   onParticipantJoined?: (displayName: string, guestCount: number) => void;
   onParticipantLeft?: (displayName: string, guestCount: number) => void;
@@ -228,6 +236,28 @@ export class StageClient {
 
       this.lastQueueSequence = delta.sequence;
       this.handlersRef.current.onQueueChanged?.(delta);
+    });
+
+    connection.on(
+      CLIENT_METHODS.QueueItemStateChanged,
+      (queueItemId: string, state: QueueItemState) => {
+        this.handlersRef.current.onQueueItemStateChanged?.(queueItemId, state);
+      },
+    );
+
+    connection.on(
+      CLIENT_METHODS.DownloadProgressChanged,
+      (progress: DownloadProgressDto) => {
+        this.handlersRef.current.onDownloadProgressChanged?.(progress);
+      },
+    );
+
+    connection.on(CLIENT_METHODS.SongReady, (ready: SongReadyDto) => {
+      this.handlersRef.current.onSongReady?.(ready);
+    });
+
+    connection.on(CLIENT_METHODS.DownloadFailed, (failed: DownloadFailedDto) => {
+      this.handlersRef.current.onDownloadFailed?.(failed);
     });
 
     connection.on(CLIENT_METHODS.PlaybackChanged, (playback: PlaybackStateDto) => {

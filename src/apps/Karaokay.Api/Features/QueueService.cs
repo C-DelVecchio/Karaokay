@@ -75,6 +75,34 @@ public sealed partial class QueueService
             return new QueueAck(false, Guid.Empty, HubErrorCodes.NotFound);
         }
 
+        return await EnqueueSongAsync(
+                room,
+                song,
+                participant.DisplayName,
+                participant.SessionTokenId,
+                QueueItemState.Ready,
+                queueItemId: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Adds a song to the room queue in an explicit lifecycle state. The library path uses
+    /// <see cref="QueueItemState.Ready"/>; the YouTube ingestion path uses
+    /// <see cref="QueueItemState.Downloading"/> so phones can render a progress row immediately.
+    /// </summary>
+    public async Task<QueueAck> EnqueueSongAsync(
+        RoomState room,
+        SongDto song,
+        string requestedByName,
+        Guid? sessionTokenId,
+        QueueItemState state,
+        Guid? queueItemId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(room);
+        ArgumentNullException.ThrowIfNull(song);
+
         await room.CommandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -83,12 +111,12 @@ public sealed partial class QueueService
             {
                 entry = new RoomQueueEntry
                 {
-                    Id = Guid.NewGuid(),
-                    SongId = songId,
+                    Id = queueItemId ?? Guid.NewGuid(),
+                    SongId = song.Id,
                     Position = room.QueueEntries.Count,
-                    RequestedByName = participant.DisplayName,
-                    State = QueueItemState.Ready,
-                    SessionTokenId = participant.SessionTokenId,
+                    RequestedByName = requestedByName,
+                    State = state,
+                    SessionTokenId = sessionTokenId,
                     RequestedAtUtc = DateTime.UtcNow,
                     Song = song,
                 };
@@ -102,8 +130,53 @@ public sealed partial class QueueService
                 .QueueChanged(new QueueDelta([ToDto(entry)], [], [], sequence))
                 .ConfigureAwait(false);
 
-            LogEnqueued(_logger, room.Code, entry.Id, songId);
+            LogEnqueued(_logger, room.Code, entry.Id, song.Id);
             return new QueueAck(true, entry.Id, null);
+        }
+        finally
+        {
+            room.CommandLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Transitions one queue row (download completion/failure) and broadcasts both the delta and
+    /// the per-item state event. Returns false when the row was removed while downloading.
+    /// </summary>
+    public async Task<bool> UpdateQueueItemStateAsync(
+        RoomState room,
+        Guid queueItemId,
+        QueueItemState state,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(room);
+
+        await room.CommandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            RoomQueueEntry? entry;
+            lock (room.SyncRoot)
+            {
+                entry = room.QueueEntries.FirstOrDefault(candidate => candidate.Id == queueItemId);
+                if (entry is null || entry.State == state)
+                {
+                    return entry is not null;
+                }
+
+                entry.State = state;
+            }
+
+            await PersistQueueAsync(room, cancellationToken).ConfigureAwait(false);
+
+            var sequence = room.NextQueueSequence();
+            await _hub.Clients.Group(room.Code)
+                .QueueChanged(new QueueDelta([], [], [ToDto(entry)], sequence))
+                .ConfigureAwait(false);
+            await _hub.Clients.Group(room.Code)
+                .QueueItemStateChanged(entry.Id, ToWireState(entry.State))
+                .ConfigureAwait(false);
+
+            return true;
         }
         finally
         {

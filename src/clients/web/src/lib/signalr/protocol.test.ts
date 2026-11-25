@@ -34,6 +34,8 @@ const EXPECTED_CLIENT_METHODS = [
   'QueueChanged',
   'QueueItemStateChanged',
   'DownloadProgressChanged',
+  'SongReady',
+  'DownloadFailed',
   'PlaybackChanged',
   'CountdownTicked',
   'LyricsLoaded',

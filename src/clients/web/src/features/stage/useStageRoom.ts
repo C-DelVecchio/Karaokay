@@ -1,13 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isValidRoomCode,
   type CreateRoomResponse,
 } from '../../lib/signalr/protocol';
 import {
   applyDelta,
+  applyDownloadFailed,
+  applyDownloadProgress,
   applyGuestCount,
   applyPlayback,
+  applyQueueItemState,
   applySnapshot,
+  applySongReady,
   createEmptyRoomState,
   type RemoteRoomState,
 } from '../../lib/signalr/roomState';
@@ -18,6 +22,8 @@ export type StageRoomStatus = 'connecting' | 'live' | 'offline';
 export interface StageRoomView {
   status: StageRoomStatus;
   room: RemoteRoomState;
+  /** Idempotent stage-only report; the server ignores duplicates for stale queue item ids. */
+  reportSongEnded: (queueItemId: string) => Promise<void>;
 }
 
 function readRequestedCode(): string | null {
@@ -48,6 +54,7 @@ async function requestRoom(signal: AbortSignal): Promise<string | null> {
 export function useStageRoom(): StageRoomView {
   const [room, setRoom] = useState<RemoteRoomState>(createEmptyRoomState);
   const [status, setStatus] = useState<StageRoomStatus>('connecting');
+  const clientRef = useRef<StageClient | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -61,6 +68,26 @@ export function useStageRoom(): StageRoomView {
       onQueueChanged: (delta) => {
         if (!disposed) {
           setRoom((current) => applyDelta(current, delta));
+        }
+      },
+      onQueueItemStateChanged: (queueItemId, itemState) => {
+        if (!disposed) {
+          setRoom((current) => applyQueueItemState(current, queueItemId, itemState));
+        }
+      },
+      onDownloadProgressChanged: (progress) => {
+        if (!disposed) {
+          setRoom((current) => applyDownloadProgress(current, progress));
+        }
+      },
+      onSongReady: (ready) => {
+        if (!disposed) {
+          setRoom((current) => applySongReady(current, ready));
+        }
+      },
+      onDownloadFailed: (failed) => {
+        if (!disposed) {
+          setRoom((current) => applyDownloadFailed(current, failed));
         }
       },
       onPlaybackChanged: (playback) => {
@@ -79,6 +106,7 @@ export function useStageRoom(): StageRoomView {
         }
       },
     });
+    clientRef.current = client;
 
     const connect = async () => {
       try {
@@ -107,9 +135,19 @@ export function useStageRoom(): StageRoomView {
     return () => {
       disposed = true;
       controller.abort();
+      clientRef.current = null;
       void client.dispose();
     };
   }, []);
 
-  return { status, room };
+  const reportSongEnded = useCallback(async (queueItemId: string): Promise<void> => {
+    try {
+      await clientRef.current?.reportSongEnded(queueItemId);
+    } catch {
+      // The ended watchdog/next snapshot will converge; never surface a transient hub fault to
+      // the video surface.
+    }
+  }, []);
+
+  return { status, room, reportSongEnded };
 }

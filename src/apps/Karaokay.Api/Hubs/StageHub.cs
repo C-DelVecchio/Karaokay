@@ -1,5 +1,7 @@
 using Karaokay.Api.Features;
+using Karaokay.Contracts;
 using Karaokay.Contracts.Hubs;
+using Karaokay.Infrastructure.MediaIngest;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 
@@ -19,6 +21,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     private readonly RoomRegistry _registry;
     private readonly RoomService _rooms;
     private readonly QueueService _queue;
+    private readonly YouTubeIngestionService _youtube;
     private readonly FeatureOptions _features;
     private readonly ILogger<StageHub> _logger;
 
@@ -26,12 +29,14 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
         RoomRegistry registry,
         RoomService rooms,
         QueueService queue,
+        YouTubeIngestionService youtube,
         IOptions<FeatureOptions> features,
         ILogger<StageHub> logger)
     {
         _registry = registry;
         _rooms = rooms;
         _queue = queue;
+        _youtube = youtube;
         _features = features.Value;
         _logger = logger;
     }
@@ -99,12 +104,31 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     /// <inheritdoc />
     public async Task<IReadOnlyList<YouTubeSearchResultDto>> SearchYouTube(string query)
     {
-        await RequireRoomAsync().ConfigureAwait(false);
+        var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
 
-        // Slice 5 wires yt-dlp search behind Features:EnableYouTubeIngestion. Until then the
-        // honest stub is an empty result list in both flag states.
-        LogSearchStub(_logger, query ?? string.Empty, _features.EnableYouTubeIngestion);
-        return EmptySearchResults;
+        if (!_features.EnableYouTubeIngestion)
+        {
+            await SendErrorAsync(
+                    HubErrorCodes.YouTubeDisabled,
+                    "YouTube ingestion is disabled on this server.")
+                .ConfigureAwait(false);
+            return EmptySearchResults;
+        }
+
+        try
+        {
+            var results = await _youtube
+                .SearchAsync(query ?? string.Empty, maxResults: 0, CancellationToken.None)
+                .ConfigureAwait(false);
+            LogSearchCompleted(_logger, room.Code, query ?? string.Empty, results.Count);
+            return results;
+        }
+        catch (YouTubeServiceException exception)
+        {
+            LogSearchFailed(_logger, room.Code, query ?? string.Empty, exception);
+            await SendErrorAsync(HubErrorCodes.InvalidRequest, exception.Message).ConfigureAwait(false);
+            return EmptySearchResults;
+        }
     }
 
     /// <inheritdoc />
@@ -126,7 +150,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     /// <inheritdoc />
     public async Task<QueueAck> EnqueueYouTubeSong(YouTubeQueueRequest request)
     {
-        await RequireRoomAsync().ConfigureAwait(false);
+        var (room, participant) = await RequireRoomAsync().ConfigureAwait(false);
 
         if (request is null)
         {
@@ -146,12 +170,33 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
             return new QueueAck(false, Guid.Empty, HubErrorCodes.YouTubeDisabled);
         }
 
-        // Ingestion itself lands in Slice 5; refuse cleanly rather than enqueue a phantom item.
-        await SendErrorAsync(
-                HubErrorCodes.NotImplemented,
-                "YouTube ingestion is enabled but the download worker is not part of this build.")
+        if (!VideoIdValidator.IsValid(request.VideoId))
+        {
+            await SendErrorAsync(
+                    HubErrorCodes.InvalidRequest,
+                    "A video id must be exactly eleven URL-safe base64 characters.")
+                .ConfigureAwait(false);
+            return new QueueAck(false, Guid.Empty, HubErrorCodes.InvalidRequest);
+        }
+
+        var ack = await _youtube
+            .EnqueueAsync(
+                room,
+                participant.DisplayName,
+                participant.SessionTokenId,
+                request,
+                CancellationToken.None)
             .ConfigureAwait(false);
-        return new QueueAck(false, Guid.Empty, HubErrorCodes.NotImplemented);
+
+        if (!ack.Success)
+        {
+            await SendErrorAsync(
+                    ack.Reason ?? HubErrorCodes.NotFound,
+                    "The YouTube item could not be enqueued.")
+                .ConfigureAwait(false);
+        }
+
+        return ack;
     }
 
     /// <inheritdoc />
@@ -349,8 +394,11 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     [LoggerMessage(Level = LogLevel.Information, Message = "Connection {ConnectionId} joined room {RoomCode} as {Role}")]
     private static partial void LogJoined(ILogger logger, string roomCode, string connectionId, string role);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "SearchYouTube stub invoked for '{Query}' (ingestion enabled: {Enabled})")]
-    private static partial void LogSearchStub(ILogger logger, string query, bool enabled);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Room {RoomCode} YouTube search for '{Query}' returned {Count} result(s)")]
+    private static partial void LogSearchCompleted(ILogger logger, string roomCode, string query, int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Room {RoomCode} YouTube search for '{Query}' failed")]
+    private static partial void LogSearchFailed(ILogger logger, string roomCode, string query, Exception exception);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Room {RoomCode} stage latency estimate is {LatencyMs} ms")]
     private static partial void LogCapabilities(ILogger logger, string roomCode, int latencyMs);

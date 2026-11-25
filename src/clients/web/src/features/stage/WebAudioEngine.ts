@@ -3,8 +3,13 @@
  *
  * Autoplay safety: the constructor never touches Web Audio. The `AudioContext` is created only
  * inside `unlock()`, which must be called synchronously from a user-gesture handler. Decoding
- * waits on that unlock even if stems were fetched earlier. Nothing here calls
- * `createMediaElementSource` — that path is reserved for Slice 4 video mode.
+ * waits on that unlock even if stems were fetched earlier.
+ *
+ * Video mode routes ONE persistent `<video>` element through `attachMediaElement()` after the same
+ * unlock gesture. A media element can be associated with at most one `MediaElementAudioSourceNode`
+ * per context, so callers must keep the element mounted and change only its `src` between songs.
+ * The source node stays connected to the master bus; leaving video mode pauses the element and
+ * clears its `src`, which releases the decoded media without ever re-sourcing the element.
  */
 
 export interface LoadedStageSong {
@@ -74,6 +79,10 @@ export const stageTestClock = {
   isSet(): boolean {
     return testClockMs !== null;
   },
+  /** The installed override, or null when the real clock is authoritative. */
+  positionMs(): number | null {
+    return testClockMs;
+  },
 };
 
 declare global {
@@ -120,6 +129,9 @@ export class WebAudioEngine {
 
   private instrumentalBus: GainNode | null = null;
   private guideBus: GainNode | null = null;
+  private videoBus: GainNode | null = null;
+  private mediaElementSource: MediaElementAudioSourceNode | null = null;
+  private mediaElement: HTMLMediaElement | null = null;
   private instrumentalVolume = DEFAULT_INSTRUMENTAL_GAIN;
   private guideVolume = DEFAULT_GUIDE_GAIN;
   private masterVolume = DEFAULT_MASTER_GAIN;
@@ -182,6 +194,9 @@ export class WebAudioEngine {
       this.context = null;
       this.instrumentalBus = null;
       this.guideBus = null;
+      this.videoBus = null;
+      this.mediaElementSource = null;
+      this.mediaElement = null;
       this.resolveUnlocked = null;
       this.unlockedSignal = new Promise<void>((resolve) => {
         this.resolveUnlocked = resolve;
@@ -300,6 +315,44 @@ export class WebAudioEngine {
   }
 
   /**
+   * Routes the stage's persistent `<video>` element into the master bus. Must only be called after
+   * `unlock()` (the autoplay gesture) and is idempotent for the same element. Reusing one element
+   * for every YouTube song means exactly one `createMediaElementSource` node per page session.
+   */
+  attachMediaElement(element: HTMLMediaElement): boolean {
+    const context = this.context;
+    const videoBus = this.videoBus;
+    if (!context || !videoBus) {
+      return false;
+    }
+
+    if (this.mediaElement === element && this.mediaElementSource) {
+      return true;
+    }
+
+    if (this.mediaElementSource && this.mediaElement !== element) {
+      // A remounted stage gets a brand-new element. The old element's node can never be reused
+      // (the browser allows only one source node per element), so retire it and source the new
+      // element. The normal path keeps one element for the page session and never reaches this.
+      this.mediaElementSource.disconnect();
+      this.mediaElementSource = null;
+      this.mediaElement = null;
+    }
+
+    const source = context.createMediaElementSource(element);
+    source.connect(videoBus);
+    this.mediaElement = element;
+    this.mediaElementSource = source;
+    logAudio('createMediaElementSource');
+    return true;
+  }
+
+  /** True once {@link attachMediaElement} has created the element's source node. */
+  hasMediaElementSource(element: HTMLMediaElement): boolean {
+    return this.mediaElement === element && this.mediaElementSource !== null;
+  }
+
+  /**
    * Media-clock ground truth. Uses `AudioContext.currentTime` only; the test-clock override wins
    * when a deterministic value has been installed.
    */
@@ -355,16 +408,20 @@ export class WebAudioEngine {
       const master = context.createGain();
       const instrumentalBus = context.createGain();
       const guideBus = context.createGain();
+      const videoBus = context.createGain();
       master.gain.value = this.masterVolume;
       instrumentalBus.gain.value = this.instrumentalVolume;
       guideBus.gain.value = this.guideVolume;
+      videoBus.gain.value = 1;
 
       instrumentalBus.connect(master);
       guideBus.connect(master);
+      videoBus.connect(master);
       master.connect(context.destination);
 
       this.instrumentalBus = instrumentalBus;
       this.guideBus = guideBus;
+      this.videoBus = videoBus;
 
       await context.resume();
       logAudio('resume');

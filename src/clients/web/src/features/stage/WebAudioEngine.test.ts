@@ -95,6 +95,7 @@ class MockAudioContext {
   readonly calls: string[] = [];
   readonly gainNodes: MockGainNode[] = [];
   readonly sources: MockBufferSource[] = [];
+  readonly mediaElements: unknown[] = [];
   readonly pendingDecodes: Array<(buffer: AudioBuffer) => void> = [];
   deferDecode = false;
   decodeCalls = 0;
@@ -113,6 +114,12 @@ class MockAudioContext {
     this.sources.push(source);
     this.calls.push('createBufferSource');
     return source;
+  }
+
+  createMediaElementSource(element: unknown): MockGainNode {
+    this.mediaElements.push(element);
+    this.calls.push('createMediaElementSource');
+    return new MockGainNode(1);
   }
 
   decodeAudioData(_data: ArrayBuffer): Promise<AudioBuffer> {
@@ -189,6 +196,32 @@ describe('WebAudioEngine gesture gating', () => {
     expect(context.sources).toHaveLength(2);
     expect(getAudioLog()).toContain('createBufferSource');
     expect(getAudioLog()).toContain('start');
+  });
+});
+
+describe('WebAudioEngine media-element routing', () => {
+  it('refuses to source a video before unlock and creates exactly one node afterwards', async () => {
+    const { engine, context } = createHarness();
+    const element = {} as HTMLMediaElement;
+
+    expect(engine.attachMediaElement(element)).toBe(false);
+    expect(context.mediaElements).toHaveLength(0);
+    expect(getAudioLog()).not.toContain('createMediaElementSource');
+
+    await engine.unlock();
+
+    expect(engine.attachMediaElement(element)).toBe(true);
+    expect(engine.attachMediaElement(element)).toBe(true);
+    expect(context.mediaElements).toEqual([element]);
+    expect(getAudioLog().filter((entry) => entry === 'createMediaElementSource')).toHaveLength(1);
+    expect(engine.hasMediaElementSource(element)).toBe(true);
+
+    // A remounted stage supplies a new element; the retired node is disconnected and replaced.
+    const replacement = {} as HTMLMediaElement;
+    expect(engine.attachMediaElement(replacement)).toBe(true);
+    expect(engine.hasMediaElementSource(element)).toBe(false);
+    expect(engine.hasMediaElementSource(replacement)).toBe(true);
+    expect(context.mediaElements).toEqual([element, replacement]);
   });
 });
 

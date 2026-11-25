@@ -3,9 +3,10 @@ import type { SongSummaryDto } from '../../lib/signalr/protocol';
 import { LibraryTab } from './LibraryTab';
 import { PlaybackControls } from './PlaybackControls';
 import { QueueList } from './QueueList';
+import { YouTubeTab } from './YouTubeTab';
 import type { StageClientApi } from './useStageClient';
 
-type LobbyTab = 'library' | 'queue';
+type LobbyTab = 'library' | 'youtube' | 'queue';
 
 interface LobbyViewProps {
   api: StageClientApi;
@@ -96,6 +97,15 @@ export function LobbyView({ api }: LobbyViewProps) {
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'youtube'}
+          className="remote-tab"
+          onClick={() => setTab('youtube')}
+        >
+          YouTube
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'queue'}
           className="remote-tab"
           onClick={() => setTab('queue')}
@@ -112,13 +122,22 @@ export function LobbyView({ api }: LobbyViewProps) {
         />
       </div>
 
+      <div hidden={tab !== 'youtube'}>
+        <YouTubeTab
+          disabled={disabled}
+          onEnqueue={api.enqueueYouTubeSong}
+        />
+      </div>
+
       <div hidden={tab !== 'queue'}>
         <QueueList
           queue={state.queue}
           songs={songs}
+          downloads={state.downloads}
           disabled={disabled}
           onMove={api.moveQueueItem}
           onRemove={api.removeQueueItem}
+          onRetry={api.retryYouTubeSong}
         />
       </div>
     </main>

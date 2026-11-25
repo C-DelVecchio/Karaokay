@@ -25,6 +25,12 @@ public interface IStageHubClient
     /// <summary>Live YouTube download progress (Slice 5).</summary>
     Task DownloadProgressChanged(DownloadProgressDto dto);
 
+    /// <summary>A YouTube item finished downloading and is ready to play (Slice 5).</summary>
+    Task SongReady(SongReadyDto dto);
+
+    /// <summary>A YouTube item failed after retries; the room advances past it (Slice 5).</summary>
+    Task DownloadFailed(DownloadFailedDto dto);
+
     /// <summary>Authoritative playback state changed.</summary>
     Task PlaybackChanged(PlaybackStateDto dto);
 

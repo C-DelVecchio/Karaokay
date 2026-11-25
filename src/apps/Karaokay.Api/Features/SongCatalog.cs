@@ -2,8 +2,10 @@ using Karaokay.Application;
 using Karaokay.Contracts;
 using Karaokay.Contracts.Hubs;
 using Karaokay.Domain;
+using Karaokay.Infrastructure.MediaIngest;
 using Karaokay.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using WireMediaSource = Karaokay.Contracts.Hubs.MediaSource;
 
 namespace Karaokay.Api.Features;
@@ -19,11 +21,16 @@ public sealed class SongCatalog
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly MediaLibrary _library;
+    private readonly YtDlpOptions _ytDlp;
 
-    public SongCatalog(IServiceScopeFactory scopeFactory, MediaLibrary library)
+    public SongCatalog(
+        IServiceScopeFactory scopeFactory,
+        MediaLibrary library,
+        IOptions<YtDlpOptions>? ytDlpOptions = null)
     {
         _scopeFactory = scopeFactory;
         _library = library;
+        _ytDlp = ytDlpOptions?.Value ?? new YtDlpOptions();
     }
 
     /// <summary>Library rows, ordered by title then id in database mode and by slug in fallback mode.</summary>
@@ -73,7 +80,8 @@ public sealed class SongCatalog
     /// <summary>
     /// Resolves a media file for the requested song id. Database mode accepts only canonical GUID
     /// ids and paths stored on the song row; fallback mode keeps the Slice 2 directory whitelist.
-    /// Returns an absolute path that is guaranteed to stay under the media root, or <c>null</c>.
+    /// Returns an absolute path that is guaranteed to stay under a trusted root (the media root, or
+    /// the configured YouTube cache directory for YouTube videos), or <c>null</c>.
     /// </summary>
     public async Task<string?> ResolveMediaFileAsync(
         string songId,
@@ -101,6 +109,18 @@ public sealed class SongCatalog
             return null;
         }
 
+        if (fileName == MediaLibrary.VideoFile)
+        {
+            // YouTube CachePath is relative to the configured cache directory (a second trusted
+            // root); multitrack/other rows keep the media-root-relative convention.
+            if (row.Source == Karaokay.Domain.MediaSource.YouTube)
+            {
+                return YouTubeCachePaths.TryResolveStored(_ytDlp, _library.RootPath, row.CachePath);
+            }
+
+            return row.CachePath is null ? null : ResolveUnderRoot(row.CachePath);
+        }
+
         var relativePath = fileName switch
         {
             MediaLibrary.InstrumentalFile => row.InstrumentalPath,
@@ -114,6 +134,13 @@ public sealed class SongCatalog
 
     private string? ResolveFromLibrary(string songId, string fileName)
     {
+        if (fileName == MediaLibrary.VideoFile
+            && Guid.TryParse(songId, out var id)
+            && TryResolveCachedVideo(id) is { } cachedVideo)
+        {
+            return cachedVideo;
+        }
+
         if (!_library.TryGetSongDirectory(songId, out var directory))
         {
             return null;
@@ -121,6 +148,32 @@ public sealed class SongCatalog
 
         var path = Path.Combine(directory, fileName);
         return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>
+    /// No-database fallback for cached YouTube videos. Ingestion derives a deterministic song id
+    /// from the video id (<see cref="YouTubeSongIds"/>), so the cache directory can be scanned for
+    /// the matching <c>{videoId}.mp4</c> without a <c>Songs</c> row.
+    /// </summary>
+    private string? TryResolveCachedVideo(Guid songId)
+    {
+        var cacheDirectory = YouTubeCachePaths.ResolveDirectory(_ytDlp, _library.RootPath);
+
+        if (!Directory.Exists(cacheDirectory))
+        {
+            return null;
+        }
+
+        foreach (var candidate in Directory.EnumerateFiles(cacheDirectory, "*.mp4"))
+        {
+            var videoId = Path.GetFileNameWithoutExtension(candidate);
+            if (VideoIdValidator.IsValid(videoId) && YouTubeSongIds.ForVideo(videoId) == songId)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

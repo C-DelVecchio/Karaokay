@@ -19,6 +19,17 @@ internal static class RepoPaths
         "public",
         "demo-tracks");
 
+    /// <summary>
+    /// Base64 (text) copy of a tiny H.264 MP4 used by the fake YouTube adapter and the Playwright
+    /// yt-dlp shim. Storing it as text keeps it outside ADR-004's committed-binary-media guard.
+    /// </summary>
+    public static string YouTubeSampleVideoBase64Path => Path.Combine(
+        RepoRoot,
+        "src",
+        "tests",
+        "fixtures",
+        "youtube-sample.mp4.b64");
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
