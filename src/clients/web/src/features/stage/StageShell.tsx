@@ -3,6 +3,7 @@ import { DemoTrackPicker } from './DemoTrackPicker';
 import type { PickedDemoTrack } from './DemoTrackPicker';
 import { findLeadInGap } from './lyrics';
 import { CanvasLyricsRenderer } from './renderer/CanvasLyricsRenderer';
+import { StageRoomPanel } from './StageRoomPanel';
 import { useStageClock } from './useStageClock';
 import { stageTestClock, WebAudioEngine } from './WebAudioEngine';
 
@@ -246,6 +247,8 @@ export function StageShell() {
         <h1>Karaokay Stage</h1>
         {phase === 'playing' && selection && <p className="stage-now-playing">{selection.song.lyrics.title}</p>}
       </header>
+
+      <StageRoomPanel />
 
       {loadError && (
         <p className="stage-error" role="alert">

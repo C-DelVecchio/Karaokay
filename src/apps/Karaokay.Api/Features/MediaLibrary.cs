@@ -59,6 +59,20 @@ public sealed partial class MediaLibrary
         [.. GetScannedSongs().Select(song => song.Summary)];
 
     /// <summary>
+    /// Scanned songs including their absolute folder, used by the Slice 3 demo-song seeder to map
+    /// filesystem media to stable database rows. Media endpoint lookups still use
+    /// <see cref="TryGetSongDirectory"/>.
+    /// </summary>
+    public IReadOnlyList<MediaLibrarySong> GetLibrarySongs() =>
+        [.. GetScannedSongs().Select(song => new MediaLibrarySong(song.Id, song.Directory, song.Summary))];
+
+    /// <summary>A scanned song folder plus its library summary.</summary>
+    /// <param name="Slug">Directory name, which is also the Slice 2 song id.</param>
+    /// <param name="Directory">Absolute folder containing the media files.</param>
+    /// <param name="Summary">Wire summary derived from <c>lyrics.json</c>.</param>
+    public sealed record MediaLibrarySong(string Slug, string Directory, SongSummaryDto Summary);
+
+    /// <summary>
     /// Resolves a caller-supplied song id against the scanned whitelist. Returns <c>false</c> for
     /// unknown, invalid, or path-like ids; no directory is ever built from raw input.
     /// </summary>

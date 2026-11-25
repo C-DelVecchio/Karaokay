@@ -1,0 +1,86 @@
+import { useEffect, useState } from 'react';
+import type { SongSummaryDto } from '../../lib/signalr/protocol';
+import { useStageRoom } from './useStageRoom';
+
+/**
+ * Small live-room overlay for the TV/browser stage. Renders nothing unless a room was created or
+ * joined successfully, which keeps the offline Slice 2 demo (and its e2e specs) byte-for-byte
+ * unchanged when no API is running.
+ */
+export function StageRoomPanel() {
+  const { status, room } = useStageRoom();
+  const snapshot = room.snapshot;
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const roomCode = snapshot?.roomCode;
+
+  useEffect(() => {
+    if (!roomCode) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const loadTitles = async () => {
+      try {
+        const response = await fetch('/api/songs');
+        if (!response.ok) {
+          return;
+        }
+
+        const songs = (await response.json()) as SongSummaryDto[];
+        if (cancelled) {
+          return;
+        }
+
+        const next: Record<string, string> = {};
+        for (const song of songs) {
+          const title = song.title ?? 'Untitled';
+          if (song.id) {
+            next[song.id] = title;
+          }
+          if (song.enqueueId) {
+            next[song.enqueueId] = title;
+          }
+        }
+
+        setTitles(next);
+      } catch {
+        // The queue falls back to requester names if the library endpoint is unavailable.
+      }
+    };
+
+    void loadTitles();
+    return () => {
+      cancelled = true;
+    };
+  }, [roomCode]);
+
+  if (status !== 'live' || !snapshot) {
+    return null;
+  }
+
+  return (
+    <aside className="stage-room-panel" aria-label="Live room">
+      <p className="stage-room-label">Join at /remote</p>
+      <p className="stage-room-code">{snapshot.roomCode}</p>
+      <img
+        className="stage-room-qr"
+        src={`/api/rooms/${snapshot.roomCode}/qr`}
+        alt={`Scan to join room ${snapshot.roomCode}`}
+        width={128}
+        height={128}
+      />
+      <p className="stage-room-guests">
+        {room.guestCount} {room.guestCount === 1 ? 'guest' : 'guests'}
+      </p>
+      {room.queue.length > 0 && (
+        <ol className="stage-room-queue" aria-label="Up next">
+          {room.queue.slice(0, 4).map((item) => (
+            <li key={item.id}>
+              {titles[item.songId] ?? 'Song'} · {item.requestedByName || 'Guest'}
+            </li>
+          ))}
+        </ol>
+      )}
+    </aside>
+  );
+}

@@ -45,6 +45,15 @@ jobs:
         working-directory: src/clients/web
         run: npm ci
 
+      - name: Regenerate OpenAPI TypeScript types from the built document
+        working-directory: src/clients/web
+        run: npm run gen:api
+
+      # `dotnet build` earlier in this job regenerates openapi.json; this step regenerates
+      # schema.d.ts from that committed document and diffs both artifacts.
+      - name: Verify generated OpenAPI artifacts are up to date
+        run: git diff --exit-code -- src/clients/web/openapi.json src/clients/web/src/lib/api/schema.d.ts
+
       - name: Web unit tests (Vitest)
         working-directory: src/clients/web
         run: npm test

@@ -21,6 +21,29 @@ public sealed class RoomCodeGenerator
     /// <summary>Bounded retry count before the generator gives up on a saturated active set.</summary>
     public const int MaxAttempts = 100;
 
+    /// <summary>
+    /// True when <paramref name="code"/> is exactly four characters from <see cref="Alphabet"/>
+    /// (uppercase only). Join handlers normalize input with <see cref="string.ToUpperInvariant"/>
+    /// before calling this.
+    /// </summary>
+    public static bool IsValidCode(string? code)
+    {
+        if (code is null || code.Length != CodeLength)
+        {
+            return false;
+        }
+
+        foreach (var character in code)
+        {
+            if (Alphabet.IndexOf(character) < 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private readonly Random _random;
     private readonly HashSet<string> _activeCodes;
 

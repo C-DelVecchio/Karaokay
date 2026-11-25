@@ -1,5 +1,33 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <!-- Emit the OpenAPI document at build time so openapi-typescript can run without a server. -->
+    <OpenApiGenerateDocuments>true</OpenApiGenerateDocuments>
+    <OpenApiDocumentsDirectory>$(MSBuildProjectDirectory)/../../../src/clients/web</OpenApiDocumentsDirectory>
+    <OpenApiGenerateDocumentsOnBuild>true</OpenApiGenerateDocumentsOnBuild>
+  </PropertyGroup>
+
+  <Target Name="NormalizeOpenApiDocument" AfterTargets="GenerateOpenApiDocuments">
+    <ItemGroup>
+      <GeneratedOpenApiDocument Include="$(OpenApiDocumentsDirectory)/Karaokay.Api.json" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(GeneratedOpenApiDocument)"
+      DestinationFiles="$(OpenApiDocumentsDirectory)/openapi.json"
+      Condition="Exists('%(GeneratedOpenApiDocument.Identity)')" />
+    <Delete Files="@(GeneratedOpenApiDocument)" Condition="Exists('%(GeneratedOpenApiDocument.Identity)')" />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="QRCoder" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\core\Karaokay.Application\Karaokay.Application.csproj" />
     <ProjectReference Include="..\..\core\Karaokay.Contracts\Karaokay.Contracts.csproj" />

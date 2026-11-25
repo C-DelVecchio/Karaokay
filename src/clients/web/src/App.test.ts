@@ -10,6 +10,11 @@ describe('resolveRoute', () => {
     expect(resolveRoute('/stage')).toBe('stage');
   });
 
+  it('maps the phone remote route', () => {
+    expect(resolveRoute('/remote')).toBe('remote');
+    expect(resolveRoute('/remote/')).toBe('remote');
+  });
+
   it('ignores a trailing slash', () => {
     expect(resolveRoute('/stage/')).toBe('stage');
   });

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { RemoteApp } from './features/remote/RemoteApp';
 import { StageShell } from './features/stage/StageShell';
 
-export type Route = 'home' | 'stage' | 'not-found';
+export type Route = 'home' | 'stage' | 'remote' | 'not-found';
 
 /**
  * Minimal pathname router: no react-router dependency for Slice 2. A trailing slash is ignored.
@@ -14,6 +15,8 @@ export function resolveRoute(pathname: string): Route {
       return 'home';
     case '/stage':
       return 'stage';
+    case '/remote':
+      return 'remote';
     default:
       return 'not-found';
   }
@@ -45,6 +48,8 @@ export default function App() {
       return <Landing />;
     case 'stage':
       return <StageShell />;
+    case 'remote':
+      return <RemoteApp />;
     default:
       return (
         <main>

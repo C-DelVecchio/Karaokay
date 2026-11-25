@@ -5,8 +5,9 @@ namespace Karaokay.Api.Endpoints;
 
 /// <summary>
 /// Range-enabled media delivery (docs/ARCHITECTURE.md §7, Slice 2). Content is immutable per song
-/// id, so responses are cacheable for a day. Song ids are resolved against the scanned library
-/// whitelist; unknown or path-like ids never touch the filesystem.
+/// id, so responses are cacheable for a day. Ids are resolved through <see cref="SongCatalog"/>:
+/// canonical GUID ids map to stored song paths in database mode, while the no-database fallback
+/// keeps the Slice 2 directory whitelist. Paths always stay under the media root.
 /// </summary>
 public static class MediaEndpoints
 {
@@ -20,51 +21,65 @@ public static class MediaEndpoints
 
         songs.MapGet(
             "/{songId}/instrumental",
-            (string songId, MediaLibrary library, HttpContext context) =>
-                Serve(songId, MediaLibrary.InstrumentalFile, OpusContentType, library, context));
+            (string songId, SongCatalog catalog, HttpContext context, CancellationToken cancellationToken) =>
+                ServeAsync(
+                    songId,
+                    MediaLibrary.InstrumentalFile,
+                    OpusContentType,
+                    catalog,
+                    context,
+                    cancellationToken));
 
         songs.MapGet(
             "/{songId}/vocals",
-            (string songId, MediaLibrary library, HttpContext context) =>
-                Serve(songId, MediaLibrary.VocalsFile, OpusContentType, library, context));
+            (string songId, SongCatalog catalog, HttpContext context, CancellationToken cancellationToken) =>
+                ServeAsync(
+                    songId,
+                    MediaLibrary.VocalsFile,
+                    OpusContentType,
+                    catalog,
+                    context,
+                    cancellationToken));
 
         songs.MapGet(
             "/{songId}/lyrics",
-            (string songId, MediaLibrary library, HttpContext context) =>
-                Serve(songId, MediaLibrary.LyricsFile, LyricsContentType, library, context));
+            (string songId, SongCatalog catalog, HttpContext context, CancellationToken cancellationToken) =>
+                ServeAsync(
+                    songId,
+                    MediaLibrary.LyricsFile,
+                    LyricsContentType,
+                    catalog,
+                    context,
+                    cancellationToken));
 
         return endpoints;
     }
 
-    private static IResult Serve(
+    private static async Task<IResult> ServeAsync(
         string songId,
         string fileName,
         string contentType,
-        MediaLibrary library,
-        HttpContext context)
+        SongCatalog catalog,
+        HttpContext context,
+        CancellationToken cancellationToken)
     {
-        if (!library.TryGetSongDirectory(songId, out var directory))
-        {
-            return Results.Problem(
-                statusCode: StatusCodes.Status404NotFound,
-                title: "Song not found",
-                detail: $"No song with id '{songId}' exists in the media library.");
-        }
+        var path = await catalog
+            .ResolveMediaFileAsync(songId, fileName, cancellationToken)
+            .ConfigureAwait(false);
 
-        var path = Path.Combine(directory, fileName);
-        var file = new FileInfo(path);
-        if (!file.Exists)
+        if (path is null)
         {
             return Results.Problem(
                 statusCode: StatusCodes.Status404NotFound,
-                title: "Media file missing",
-                detail: $"'{fileName}' is missing for song '{songId}'.");
+                title: "Song media not found",
+                detail: $"No '{fileName}' media exists for song '{songId}'.");
         }
 
         context.Response.Headers[HeaderNames.CacheControl] = ImmutableCacheControl;
         context.Response.Headers[HeaderNames.AcceptRanges] = "bytes";
 
         // Strong ETag: content is immutable, so length + mtime is a stable validator.
+        var file = new FileInfo(path);
         var entityTag = new EntityTagHeaderValue($"\"{file.Length:x}-{file.LastWriteTimeUtc.Ticks:x}\"");
 
         return Results.File(
