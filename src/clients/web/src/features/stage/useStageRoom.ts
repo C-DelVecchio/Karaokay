@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ClockSyncSampler, serverNowMs } from '../../lib/signalr/clockSync';
 import {
   isValidRoomCode,
   type CreateRoomResponse,
@@ -22,6 +23,10 @@ export type StageRoomStatus = 'connecting' | 'live' | 'offline';
 export interface StageRoomView {
   status: StageRoomStatus;
   room: RemoteRoomState;
+  /** Median Ping/Pong offset in ms; 0 until at least two samples exist. */
+  clockOffsetMs: number;
+  /** Local time corrected onto the server's wall clock (docs/ARCHITECTURE.md §5.3). */
+  serverNow: () => number;
   /** Idempotent stage-only report; the server ignores duplicates for stale queue item ids. */
   reportSongEnded: (queueItemId: string) => Promise<void>;
 }
@@ -54,7 +59,11 @@ async function requestRoom(signal: AbortSignal): Promise<string | null> {
 export function useStageRoom(): StageRoomView {
   const [room, setRoom] = useState<RemoteRoomState>(createEmptyRoomState);
   const [status, setStatus] = useState<StageRoomStatus>('connecting');
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const clientRef = useRef<StageClient | null>(null);
+  const samplerRef = useRef<ClockSyncSampler | null>(null);
+  const clockOffsetRef = useRef(0);
+  const joinedRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -105,8 +114,28 @@ export function useStageRoom(): StageRoomView {
           setRoom((current) => applyGuestCount(current, guestCount));
         }
       },
+      // Clock sync is only useful on a live connection: stop the sampler while SignalR is
+      // reconnecting/disconnected, and resume once a room membership is known again.
+      onStatusChanged: (nextStatus) => {
+        if (nextStatus === 'connected' && joinedRef.current) {
+          samplerRef.current?.start();
+        } else {
+          samplerRef.current?.stop();
+        }
+      },
     });
     clientRef.current = client;
+
+    const sampler = new ClockSyncSampler({
+      ping: (t1) => client.ping(t1),
+      onChange: (offsetMs) => {
+        clockOffsetRef.current = offsetMs;
+        if (!disposed) {
+          setClockOffsetMs(offsetMs);
+        }
+      },
+    });
+    samplerRef.current = sampler;
 
     const connect = async () => {
       try {
@@ -119,6 +148,9 @@ export function useStageRoom(): StageRoomView {
         if (!ack.success) {
           throw new Error(ack.reason ?? 'Join failed');
         }
+
+        joinedRef.current = true;
+        sampler.start();
 
         if (!disposed) {
           setStatus('live');
@@ -135,10 +167,18 @@ export function useStageRoom(): StageRoomView {
     return () => {
       disposed = true;
       controller.abort();
+      joinedRef.current = false;
+      sampler.stop();
+      samplerRef.current = null;
       clientRef.current = null;
       void client.dispose();
     };
   }, []);
+
+  const serverNow = useCallback(
+    () => serverNowMs(Date.now(), clockOffsetRef.current),
+    [],
+  );
 
   const reportSongEnded = useCallback(async (queueItemId: string): Promise<void> => {
     try {
@@ -149,5 +189,5 @@ export function useStageRoom(): StageRoomView {
     }
   }, []);
 
-  return { status, room, reportSongEnded };
+  return { status, room, clockOffsetMs, serverNow, reportSongEnded };
 }

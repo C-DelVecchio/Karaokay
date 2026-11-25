@@ -41,7 +41,12 @@ internal static class YtDlpCommandBuilder
         return arguments;
     }
 
-    /// <summary>Builds the H.264/AAC MP4 download command for an already validated video id.</summary>
+    /// <summary>
+    /// Builds the H.264/AAC MP4 download command for an already validated video id. The primary
+    /// selector constrains the video codec to AVC1 and the audio codec to MP4A so a VP9/AV1 source
+    /// cannot silently produce a non-H.264 MP4; the existing MP4/best fallbacks keep the demo
+    /// working when YouTube has no AVC1 rendition.
+    /// </summary>
     public static List<string> BuildDownloadArguments(
         string videoId,
         string stagingDirectory,
@@ -67,7 +72,7 @@ internal static class YtDlpCommandBuilder
             "--progress-template",
             ProgressTemplate,
             "-f",
-            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/best[ext=mp4]/best",
             "-S",
             "vcodec:h264,acodec:aac",
             "--merge-output-format",

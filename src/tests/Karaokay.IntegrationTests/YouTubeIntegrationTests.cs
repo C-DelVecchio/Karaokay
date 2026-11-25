@@ -148,6 +148,82 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
     }
 
     [SkippableFact]
+    public async Task EnqueueWithTheGuestSessionTokenBindsTheQueueRowToTheParticipant()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+
+        await using var connection = await ConnectAsync().ConfigureAwait(false);
+        var join = await JoinAsync(connection, room.Code, "Ada", "guest").ConfigureAwait(false);
+        Assert.True(join.Success);
+        Assert.False(string.IsNullOrWhiteSpace(join.SessionToken));
+        var expectedTokenId = Guid.Parse(join.SessionToken!);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/youtube/enqueue")
+        {
+            Content = JsonContent.Create(new YouTubeEnqueueRequest(
+                room.Code,
+                "Ada",
+                "tokenVid001",
+                "Token Song",
+                "Karaokay CI",
+                60)),
+        };
+        request.Headers.Add(YouTubeHttpHeaders.SessionToken, join.SessionToken);
+
+        using var response = await http.SendAsync(request).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var ack = await response.Content.ReadFromJsonAsync<QueueAck>().ConfigureAwait(false);
+        Assert.NotNull(ack);
+        Assert.True(ack!.Success);
+
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<KaraokayDbContext>();
+        var row = await database.QueueItems
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == ack.QueueItemId)
+            .ConfigureAwait(false);
+        Assert.Equal(expectedTokenId, row.SessionTokenId);
+    }
+
+    [SkippableFact]
+    public async Task EnqueueWithAMalformedSessionTokenFallsBackToAnonymous()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/youtube/enqueue")
+        {
+            Content = JsonContent.Create(new YouTubeEnqueueRequest(
+                room.Code,
+                "Ada",
+                "tokenVid002",
+                "Malformed Token Song",
+                "Karaokay CI",
+                60)),
+        };
+        request.Headers.Add(YouTubeHttpHeaders.SessionToken, "not-a-guid");
+
+        using var response = await http.SendAsync(request).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var ack = await response.Content.ReadFromJsonAsync<QueueAck>().ConfigureAwait(false);
+        Assert.NotNull(ack);
+        Assert.True(ack!.Success);
+
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<KaraokayDbContext>();
+        var row = await database.QueueItems
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == ack.QueueItemId)
+            .ConfigureAwait(false);
+        Assert.Null(row.SessionTokenId);
+    }
+
+    [SkippableFact]
     public async Task EnqueueingTheSameVideoTwiceUsesOneSongOneJobAndOneDownload()
     {
         RequireDocker();

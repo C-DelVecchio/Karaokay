@@ -92,7 +92,7 @@ public sealed class MediaDownloadWorkerTests
                 dto => dto.QueueItemId == queueItem.Id);
             Assert.Equal(job.SongId, ready.SongId);
             Assert.Empty(harness.Hub.Client.DownloadFailedEvents);
-            Assert.Equal(QueueItemState.Ready, harness.Room.FindQueueEntry(queueItem.Id)!.State);
+            await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Ready);
 
             // The per-attempt staging directory (including .part leftovers) is always deleted.
             Assert.Empty(harness.StagingDirectories());
@@ -136,7 +136,7 @@ public sealed class MediaDownloadWorkerTests
                 dto => dto.QueueItemId == queueItem.Id);
             Assert.Contains("simulated yt-dlp failure", failed.Reason);
             Assert.Empty(harness.Hub.Client.SongReadyEvents);
-            Assert.Equal(QueueItemState.Failed, harness.Room.FindQueueEntry(queueItem.Id)!.State);
+            await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Failed);
         }
         finally
         {
@@ -197,6 +197,87 @@ public sealed class MediaDownloadWorkerTests
         }
     }
 
+    [Fact]
+    public async Task CodecMismatchFailsTheJobWithoutRetrying()
+    {
+        await using var harness = new WorkerHarness();
+        harness.CodecProbe.Result = new CodecProbeResult(
+            CodecProbeOutcome.Mismatch,
+            "Expected H.264/AAC but found video=[vp9] audio=[opus].");
+        var queueItem = harness.AddQueueItem();
+        var (job, ticket) = harness.PrepareJob(queueItem.Id);
+        await harness.Worker.StartAsync(CancellationToken.None);
+
+        try
+        {
+            Assert.True(harness.Channel.TryEnqueue(job));
+
+            var outcome = await ticket.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(outcome.Success);
+            Assert.Contains("not H.264/AAC", outcome.FailureReason);
+            Assert.Equal(1, harness.YouTube.Attempts);
+            Assert.Equal(DownloadStage.Failed, job.Stage);
+            Assert.False(File.Exists(Path.Combine(harness.Root, "ytcache", VideoId + ".mp4")));
+            Assert.Empty(harness.StagingDirectories());
+
+            var failed = Assert.Single(harness.Hub.Client.DownloadFailedEvents);
+            Assert.Contains("vp9", failed.Reason);
+            Assert.Empty(harness.Hub.Client.SongReadyEvents);
+            await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Failed);
+        }
+        finally
+        {
+            await harness.Worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task UnavailableCodecProbeDegradesToReady()
+    {
+        await using var harness = new WorkerHarness();
+        harness.CodecProbe.Result = new CodecProbeResult(
+            CodecProbeOutcome.Unavailable,
+            "ffprobe is not installed");
+        var queueItem = harness.AddQueueItem();
+        var (job, ticket) = harness.PrepareJob(queueItem.Id);
+        await harness.Worker.StartAsync(CancellationToken.None);
+
+        try
+        {
+            Assert.True(harness.Channel.TryEnqueue(job));
+
+            var outcome = await ticket.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(outcome.Success);
+            Assert.True(File.Exists(Path.Combine(harness.Root, "ytcache", VideoId + ".mp4")));
+            // SongReady and the queue-state update are broadcast after ticket completion, so wait
+            // for the row instead of racing the worker.
+            await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Ready);
+        }
+        finally
+        {
+            await harness.Worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static async Task WaitForQueueStateAsync(
+        RoomState room,
+        Guid queueItemId,
+        QueueItemState expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (room.FindQueueEntry(queueItemId)?.State == expected)
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        Assert.Fail($"Timed out waiting for queue item {queueItemId} to reach {expected}.");
+    }
+
     private sealed class WorkerHarness : IAsyncDisposable
     {
         public WorkerHarness(int maxAttempts = 3)
@@ -209,6 +290,7 @@ public sealed class MediaDownloadWorkerTests
             Channel = new DownloadJobChannel();
             Coordinator = new DownloadJobCoordinator();
             YouTube = new FakeYouTubeService();
+            CodecProbe = new StubMediaCodecProbe();
             Registry = new RoomRegistry();
             Hub = new RecordingHubContext();
             ScopeFactory = new NoDatabaseScopeFactory();
@@ -231,6 +313,7 @@ public sealed class MediaDownloadWorkerTests
                 Channel,
                 Coordinator,
                 YouTube,
+                CodecProbe,
                 ScopeFactory,
                 Registry,
                 queue,
@@ -253,6 +336,8 @@ public sealed class MediaDownloadWorkerTests
         public DownloadJobCoordinator Coordinator { get; }
 
         public FakeYouTubeService YouTube { get; }
+
+        public StubMediaCodecProbe CodecProbe { get; }
 
         public RoomRegistry Registry { get; }
 
@@ -394,6 +479,15 @@ public sealed class MediaDownloadWorkerTests
                 "youtube-sample.mp4.b64");
             return Convert.FromBase64String(File.ReadAllText(path).Trim());
         }
+    }
+
+    private sealed class StubMediaCodecProbe : IMediaCodecProbe
+    {
+        public CodecProbeResult Result { get; set; } =
+            new(CodecProbeOutcome.Match, "stubbed H.264/AAC");
+
+        public Task<CodecProbeResult> ProbeAsync(string file, CancellationToken cancellationToken) =>
+            Task.FromResult(Result);
     }
 
     private sealed class NoDatabaseScopeFactory : IServiceScopeFactory

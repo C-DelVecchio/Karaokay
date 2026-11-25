@@ -36,10 +36,23 @@ public sealed partial class YouTubeIngestionService
 
     private const int AttachRetryDelayMilliseconds = 50;
 
+    /// <summary>Maximum not-yet-ready download rows a single room may have at once.</summary>
+    internal const int MaxPendingDownloadsPerRoom = 4;
+
+    /// <summary>Maximum not-yet-ready download rows across every live room (disk/CPU bound).</summary>
+    internal const int MaxPendingDownloadsGlobal = 16;
+
+    private const string QueueFullReason =
+        "The download queue is full. Please retry once an earlier download has finished.";
+
+    private const string CancelledReason =
+        "The download request was cancelled before the job was queued.";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IYouTubeService _youtube;
     private readonly DownloadJobChannel _queue;
     private readonly DownloadJobCoordinator _coordinator;
+    private readonly RoomRegistry _rooms;
     private readonly QueueService _roomQueue;
     private readonly MediaLibrary _library;
     private readonly IHubContext<StageHub, IStageHubClient> _hub;
@@ -52,6 +65,7 @@ public sealed partial class YouTubeIngestionService
         IYouTubeService youtube,
         DownloadJobChannel queue,
         DownloadJobCoordinator coordinator,
+        RoomRegistry rooms,
         QueueService roomQueue,
         MediaLibrary library,
         IHubContext<StageHub, IStageHubClient> hub,
@@ -66,6 +80,7 @@ public sealed partial class YouTubeIngestionService
         _youtube = youtube;
         _queue = queue;
         _coordinator = coordinator;
+        _rooms = rooms;
         _roomQueue = roomQueue;
         _library = library;
         _hub = hub;
@@ -150,6 +165,15 @@ public sealed partial class YouTubeIngestionService
         }
 
         var queueItemId = Guid.NewGuid();
+
+        // Bound pending work before adding a Downloading row: a full bounded channel or an
+        // already-saturated room must reject immediately (QueueFull) rather than block the caller.
+        if (!HasPendingDownloadCapacity(room, videoId))
+        {
+            LogQueueFull(_logger, room.Code, videoId);
+            return new QueueAck(false, Guid.Empty, HubErrorCodes.QueueFull);
+        }
+
         var ack = await _roomQueue.EnqueueSongAsync(
                 room,
                 song,
@@ -203,13 +227,60 @@ public sealed partial class YouTubeIngestionService
             {
                 try
                 {
-                    await QueueJobAsync(lookup.SongId, videoId, queueItemId, cancellationToken)
+                    if (!await TryQueueJobAsync(lookup.SongId, videoId, queueItemId, cancellationToken)
+                            .ConfigureAwait(false))
+                    {
+                        // Coalesced requests may already be attached to this ticket. Complete it so
+                        // they fail loudly here instead of waiting forever for a job that was
+                        // rejected by the bounded channel.
+                        ticket.TryRemoveTarget(queueItemId);
+                        var orphanedTargets = ticket.Complete(
+                            new DownloadJobResult(false, QueueFullReason));
+                        _coordinator.TryRemove(ticket);
+                        await TryDeleteDownloadJobAsync(queueItemId).ConfigureAwait(false);
+
+                        foreach (var orphaned in orphanedTargets)
+                        {
+                            var targetRoom = _rooms.Find(orphaned.RoomCode)
+                                ?? _rooms.FindByQueueItemId(orphaned.QueueItemId);
+                            if (targetRoom is null)
+                            {
+                                continue;
+                            }
+
+                            await FailQueueItemAsync(
+                                    targetRoom,
+                                    orphaned.QueueItemId,
+                                    lookup.SongId,
+                                    QueueFullReason,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                        }
+
+                        await FailQueueItemAsync(
+                                room,
+                                queueItemId,
+                                lookup.SongId,
+                                QueueFullReason,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        return new QueueAck(false, queueItemId, HubErrorCodes.QueueFull);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    ticket.TryRemoveTarget(queueItemId);
+                    _coordinator.TryRemove(ticket);
+                    await TryDeleteDownloadJobAsync(queueItemId).ConfigureAwait(false);
+                    await TryFailQueueItemAfterCancellationAsync(room, queueItemId, lookup.SongId)
                         .ConfigureAwait(false);
+                    throw;
                 }
                 catch
                 {
                     ticket.TryRemoveTarget(queueItemId);
                     _coordinator.TryRemove(ticket);
+                    await TryDeleteDownloadJobAsync(queueItemId).ConfigureAwait(false);
                     throw;
                 }
             }
@@ -227,15 +298,29 @@ public sealed partial class YouTubeIngestionService
         return new QueueAck(false, queueItemId, HubErrorCodes.DownloadUnavailable);
     }
 
-    private async Task FailUnattachableQueueItemAsync(
+    private Task FailUnattachableQueueItemAsync(
         RoomState room,
         Guid queueItemId,
         Guid songId,
+        CancellationToken cancellationToken) =>
+        FailQueueItemAsync(
+            room,
+            queueItemId,
+            songId,
+            "The download for this video could not be attached to the queue item. Please retry.",
+            cancellationToken);
+
+    /// <summary>
+    /// Transitions a row that never received a live download job to <c>Failed</c> and tells the room
+    /// why. Used for queue-cap rejection, caller cancellation, and the coalescing race.
+    /// </summary>
+    private async Task FailQueueItemAsync(
+        RoomState room,
+        Guid queueItemId,
+        Guid songId,
+        string reason,
         CancellationToken cancellationToken)
     {
-        const string reason =
-            "The download for this video could not be attached to the queue item. Please retry.";
-
         await _roomQueue.UpdateQueueItemStateAsync(
                 room,
                 queueItemId,
@@ -248,7 +333,59 @@ public sealed partial class YouTubeIngestionService
             .ConfigureAwait(false);
     }
 
-    private async Task QueueJobAsync(
+    /// <summary>Best-effort cleanup after the caller's token was cancelled (always uses no token).</summary>
+    private async Task TryFailQueueItemAfterCancellationAsync(
+        RoomState room,
+        Guid queueItemId,
+        Guid songId)
+    {
+        try
+        {
+            await FailQueueItemAsync(room, queueItemId, songId, CancelledReason, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            LogCancellationCleanupFailed(_logger, room.Code, queueItemId, exception);
+        }
+    }
+
+    /// <summary>
+    /// True when this request may add a not-yet-ready row. Coalesced requests attach to an existing
+    /// in-flight ticket and add no download work, so they bypass the job caps.
+    /// </summary>
+    private bool HasPendingDownloadCapacity(RoomState room, string videoId)
+    {
+        if (_coordinator.Find(videoId) is { Result: null })
+        {
+            return true;
+        }
+
+        if (CountPendingDownloads(room) >= MaxPendingDownloadsPerRoom)
+        {
+            return false;
+        }
+
+        var globalPending = 0;
+        foreach (var code in _rooms.ActiveCodes)
+        {
+            if (_rooms.Find(code) is { } candidate)
+            {
+                globalPending += CountPendingDownloads(candidate);
+            }
+        }
+
+        return globalPending < MaxPendingDownloadsGlobal;
+    }
+
+    private static int CountPendingDownloads(RoomState room) =>
+        room.Queue.Count(entry => entry.State is QueueItemState.Downloading or QueueItemState.Queued);
+
+    /// <summary>
+    /// Persists and pushes one job without blocking on a full channel. Returns <c>false</c> when the
+    /// bounded queue is at capacity, after removing any row that was already persisted.
+    /// </summary>
+    private async Task<bool> TryQueueJobAsync(
         Guid songId,
         string videoId,
         Guid queueItemId,
@@ -283,7 +420,42 @@ public sealed partial class YouTubeIngestionService
             }
         }
 
-        await _queue.EnqueueAsync(job, cancellationToken).ConfigureAwait(false);
+        if (_queue.TryEnqueue(job))
+        {
+            return true;
+        }
+
+        await TryDeleteDownloadJobAsync(queueItemId).ConfigureAwait(false);
+        return false;
+    }
+
+    /// <summary>Best-effort removal of a persisted job row that never reached the worker.</summary>
+    private async Task TryDeleteDownloadJobAsync(Guid queueItemId)
+    {
+        try
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var database = scope.ServiceProvider.GetService<KaraokayDbContext>();
+            if (database is null)
+            {
+                return;
+            }
+
+            var row = await database.DownloadJobs
+                .FirstOrDefaultAsync(candidate => candidate.QueueItemId == queueItemId, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (row is null)
+            {
+                return;
+            }
+
+            database.DownloadJobs.Remove(row);
+            await database.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            LogJobCleanupFailed(_logger, queueItemId, exception);
+        }
     }
 
     private async Task<SongLookup> ResolveSongAsync(
@@ -407,4 +579,17 @@ public sealed partial class YouTubeIngestionService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Download ticket for {VideoId} completed before a new queue row attached")]
     private static partial void LogCoalescingRace(ILogger logger, string videoId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Room {RoomCode} rejected YouTube video {VideoId}: pending download capacity is full")]
+    private static partial void LogQueueFull(ILogger logger, string roomCode, string videoId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Could not clean up the persisted DownloadJob for queue item {QueueItemId}")]
+    private static partial void LogJobCleanupFailed(ILogger logger, Guid queueItemId, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Could not mark queue item {QueueItemId} in room {RoomCode} as failed after cancellation")]
+    private static partial void LogCancellationCleanupFailed(
+        ILogger logger,
+        string roomCode,
+        Guid queueItemId,
+        Exception exception);
 }

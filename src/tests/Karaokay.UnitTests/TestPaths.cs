@@ -20,6 +20,14 @@ internal static class TestPaths
         "fixtures",
         "golden");
 
+    /// <summary>Base64 text fixture that decodes to a tiny real H.264/AAC MP4.</summary>
+    public static string YouTubeSampleVideoBase64Path => Path.Combine(
+        RepoRoot,
+        "src",
+        "tests",
+        "fixtures",
+        "youtube-sample.mp4.b64");
+
     /// <summary>Directory holding the committed demo tracks served by the web client.</summary>
     public static string DemoTracksDirectory => Path.Combine(
         RepoRoot,

@@ -219,6 +219,12 @@ public sealed class YtDlpParsingTests
         Assert.Contains("--newline", arguments);
         Assert.Contains("--progress", arguments);
 
+        var formatSelectorIndex = arguments.IndexOf("-f");
+        Assert.True(formatSelectorIndex >= 0);
+        Assert.Equal(
+            "bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/best[ext=mp4]/best",
+            arguments[formatSelectorIndex + 1]);
+
         var formatIndex = arguments.IndexOf("-S");
         Assert.True(formatIndex >= 0);
         Assert.Equal("vcodec:h264,acodec:aac", arguments[formatIndex + 1]);

@@ -1,8 +1,12 @@
 extern alias ApiHost;
 
 using System.Collections.Concurrent;
+using System.Net;
 using Karaokay.Contracts.Hubs;
 using Karaokay.Infrastructure.MediaIngest;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
@@ -63,6 +67,18 @@ public sealed class YouTubeApiFixture : IAsyncLifetime
         }
         catch (Exception exception)
         {
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("CI"),
+                    "true",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Docker is required for the YouTube PostgreSQL integration suite but the container " +
+                    "could not start. CI sets CI=true, so this is a hard failure instead of a skip. " +
+                    $"Start Docker (or fix the runner) and re-run. Details: {exception.Message}",
+                    exception);
+            }
+
             SkipReason =
                 "Docker is unavailable, so the YouTube PostgreSQL Testcontainers suite is skipped. " +
                 $"Start Docker/colima and re-run. Details: {exception.Message}";
@@ -104,6 +120,7 @@ public sealed class YouTubeApiFixture : IAsyncLifetime
                 {
                     services.RemoveAll<IYouTubeService>();
                     services.AddSingleton<IYouTubeService>(YouTube);
+                    services.AddSingleton<IStartupFilter, RemoteIpTestStartupFilter>();
                 });
             });
 
@@ -175,6 +192,33 @@ public sealed class YouTubeApiFixture : IAsyncLifetime
             File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), overwrite: true);
         }
     }
+}
+
+/// <summary>
+/// Test-only middleware hook: the in-process TestServer leaves <c>RemoteIpAddress</c> null, which
+/// disables the YouTube per-IP rate limiter. A request opts in by sending
+/// <see cref="HeaderName"/>, letting the rate-limit test exercise the real fixed-window policies
+/// without throttling every other test sharing this fixture.
+/// </summary>
+public sealed class RemoteIpTestStartupFilter : IStartupFilter
+{
+    /// <summary>Request header that supplies the simulated client IP.</summary>
+    public const string HeaderName = "X-Test-Remote-Ip";
+
+    public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+    {
+        app.Use(async (context, nextMiddleware) =>
+        {
+            if (IPAddress.TryParse(context.Request.Headers[HeaderName], out var address))
+            {
+                context.Connection.RemoteIpAddress = address;
+            }
+
+            await nextMiddleware().ConfigureAwait(false);
+        });
+
+        next(app);
+    };
 }
 
 /// <summary>

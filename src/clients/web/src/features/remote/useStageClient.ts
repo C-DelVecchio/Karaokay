@@ -162,9 +162,9 @@ export function useStageClient(): StageClientApi {
         channel: result.channel,
         durationSeconds: Number(result.durationSeconds) || 0,
         thumbnailUrl: result.thumbnailUrl,
-      });
+      }, client.getSessionToken());
     },
-    [displayName],
+    [client, displayName],
   );
 
   const retryYouTubeSong = useCallback(
@@ -185,9 +185,9 @@ export function useStageClient(): StageClientApi {
         ...remembered,
         roomCode,
         requestedByName: remembered.requestedByName || displayName,
-      });
+      }, client.getSessionToken());
     },
-    [displayName],
+    [client, displayName],
   );
 
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {

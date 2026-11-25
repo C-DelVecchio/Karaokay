@@ -48,12 +48,13 @@ export function StageShell() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<CanvasLyricsRenderer | null>(null);
   const subscribeStageClock = useStageClock(engine);
-  const { status: roomStatus, room, reportSongEnded } = useStageRoom();
+  const { status: roomStatus, room, serverNow, reportSongEnded } = useStageRoom();
   const playback = room.playback ?? room.snapshot?.playback ?? null;
   const video = useStageVideo({
     playback,
     audioUnlocked,
     engine,
+    serverNow,
     onSongEnded: (queueItemId) => {
       void reportSongEnded(queueItemId);
     },

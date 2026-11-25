@@ -41,6 +41,18 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         }
         catch (Exception exception)
         {
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("CI"),
+                    "true",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Docker is required for the PostgreSQL integration suite but the container could " +
+                    "not start. CI sets CI=true, so this is a hard failure instead of a skip. " +
+                    $"Start Docker (or fix the runner) and re-run. Details: {exception.Message}",
+                    exception);
+            }
+
             SkipReason =
                 "Docker is unavailable, so the PostgreSQL Testcontainers suite is skipped. " +
                 $"Start Docker/colima and re-run. Details: {exception.Message}";

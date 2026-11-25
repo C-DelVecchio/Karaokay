@@ -97,8 +97,11 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     /// <inheritdoc />
     public async Task<Pong> Ping(PingPayload payload)
     {
+        // Stamp T2 at method entry, before the room lookup: the NTP-style offset estimate must not
+        // include server-side registry latency. The room requirement still gates the exchange.
+        var receivedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         await RequireRoomAsync().ConfigureAwait(false);
-        return new Pong(payload?.T1 ?? 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        return new Pong(payload?.T1 ?? 0, receivedAt);
     }
 
     /// <inheritdoc />
@@ -118,7 +121,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
         try
         {
             var results = await _youtube
-                .SearchAsync(query ?? string.Empty, maxResults: 0, CancellationToken.None)
+                .SearchAsync(query ?? string.Empty, maxResults: 0, Context.ConnectionAborted)
                 .ConfigureAwait(false);
             LogSearchCompleted(_logger, room.Code, query ?? string.Empty, results.Count);
             return results;
@@ -185,14 +188,15 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
                 participant.DisplayName,
                 participant.SessionTokenId,
                 request,
-                CancellationToken.None)
+                Context.ConnectionAborted)
             .ConfigureAwait(false);
 
         if (!ack.Success)
         {
-            await SendErrorAsync(
-                    ack.Reason ?? HubErrorCodes.NotFound,
-                    "The YouTube item could not be enqueued.")
+            var message = ack.Reason == HubErrorCodes.QueueFull
+                ? "The YouTube download queue is full. Try again once an earlier download finishes."
+                : "The YouTube item could not be enqueued.";
+            await SendErrorAsync(ack.Reason ?? HubErrorCodes.NotFound, message)
                 .ConfigureAwait(false);
         }
 

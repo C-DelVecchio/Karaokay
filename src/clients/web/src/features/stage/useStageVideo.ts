@@ -33,6 +33,11 @@ interface UseStageVideoOptions {
   playback: PlaybackStateDto | null;
   audioUnlocked: boolean;
   engine: WebAudioEngine;
+  /**
+   * Local time corrected onto the server wall clock (docs/ARCHITECTURE.md §5.3 layer 1). Defaults
+   * to the raw local clock so a stage without a live room keeps today's behavior.
+   */
+  serverNow?: () => number;
   onSongEnded: (queueItemId: string) => void;
 }
 
@@ -74,10 +79,12 @@ export function useStageVideo({
   playback,
   audioUnlocked,
   engine,
+  serverNow,
   onSongEnded,
 }: UseStageVideoOptions): StageVideoHandle {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackRef = useRef<PlaybackStateDto | null>(playback);
+  const serverNowRef = useRef<() => number>(serverNow ?? Date.now);
   const onSongEndedRef = useRef(onSongEnded);
   const modeRef = useRef<StageVideoMode>('placeholder');
   const songIdRef = useRef<string | null>(null);
@@ -90,6 +97,7 @@ export function useStageVideo({
   const mode: StageVideoMode = isYouTubePlayback(playback) ? 'video' : 'placeholder';
 
   playbackRef.current = playback;
+  serverNowRef.current = serverNow ?? Date.now;
   onSongEndedRef.current = onSongEnded;
   modeRef.current = mode;
   songIdRef.current = mode === 'video' ? songId : null;
@@ -159,7 +167,7 @@ export function useStageVideo({
       }
 
       const actualMs = video.currentTime * 1000;
-      const correction = videoCorrection(current, actualMs, Date.now());
+      const correction = videoCorrection(current, actualMs, serverNowRef.current());
       const shouldPlay = current.status === PlaybackStatus.Playing;
 
       if (correction.seekMs !== null) {
@@ -262,7 +270,7 @@ export function useStageVideo({
         return noticeRef.current;
       },
       currentTime: () => videoRef.current?.currentTime ?? 0,
-      expectedMs: () => expectedPositionMs(playbackRef.current, Date.now()),
+      expectedMs: () => expectedPositionMs(playbackRef.current, serverNowRef.current()),
       paused: () => videoRef.current?.paused ?? true,
       injectDrift: (ms: number) => {
         const video = videoRef.current;

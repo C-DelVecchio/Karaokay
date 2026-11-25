@@ -210,6 +210,19 @@ public sealed class RoomState
             return ParticipantsByConnection.GetValueOrDefault(connectionId);
         }
     }
+
+    /// <summary>
+    /// Finds the participant holding a session token id. REST callers that joined over SignalR can
+    /// present the token in a header; the endpoint resolves it to this participant's ownership id.
+    /// </summary>
+    public RoomParticipant? FindParticipantBySessionToken(Guid sessionTokenId)
+    {
+        lock (SyncRoot)
+        {
+            return ParticipantsByConnection.Values
+                .FirstOrDefault(participant => participant.SessionTokenId == sessionTokenId);
+        }
+    }
 }
 
 /// <summary>

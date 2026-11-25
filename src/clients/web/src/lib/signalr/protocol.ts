@@ -13,6 +13,13 @@ import type { components } from '../api/schema';
 /** Same-origin hub endpoint; Vite proxies it to the API in dev/preview. */
 export const STAGE_HUB_URL = '/hubs/stage';
 
+/**
+ * Optional REST header carrying the hub session token from `JoinAck` (mirrors
+ * `Karaokay.Contracts.YouTubeHttpHeaders.SessionToken`). Enqueue uses it to attribute a queue row
+ * to a joined guest without a hub invocation.
+ */
+export const SESSION_TOKEN_HEADER = 'X-Karaokay-Session-Token';
+
 /** Room-code alphabet shared with `Karaokay.Application.RoomCodeGenerator` (no I/O/Q). */
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPRSTUVWXYZ';
 export const ROOM_CODE_LENGTH = 4;
@@ -132,6 +139,7 @@ export const HUB_ERROR_CODES = {
   YouTubeDisabled: 'YouTubeDisabled',
   NotFound: 'NotFound',
   DownloadUnavailable: 'DownloadUnavailable',
+  QueueFull: 'QueueFull',
   NotImplemented: 'NotImplemented',
 } as const;
 
@@ -141,7 +149,6 @@ export type HubErrorCode = (typeof HUB_ERROR_CODES)[keyof typeof HUB_ERROR_CODES
 // REST types come from the generated OpenAPI schema (no hand duplication).
 // -------------------------------------------------------------------------------------------------
 
-export type SongDto = components['schemas']['SongDto'];
 export type SongSummaryDto = components['schemas']['SongSummaryDto'];
 export type CreateRoomResponse = components['schemas']['CreateRoomResponse'];
 
@@ -152,6 +159,15 @@ export type CreateRoomResponse = components['schemas']['CreateRoomResponse'];
 // -------------------------------------------------------------------------------------------------
 
 export type HubRole = 'stage' | 'guest';
+
+export interface SongDto {
+  id: string;
+  title: string;
+  artist: string | null;
+  durationMs: number;
+  source: MediaSource;
+  thumbnailUrl: string | null;
+}
 
 export interface JoinRequest {
   roomCode: string;

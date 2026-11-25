@@ -12,7 +12,7 @@ namespace Karaokay.Api.Endpoints;
 /// <c>Features:EnableYouTubeIngestion</c>, and reject anything that is not an eleven-character
 /// video id before a download can be scheduled.
 /// </summary>
-public static class YouTubeEndpoints
+public static partial class YouTubeEndpoints
 {
     public static IEndpointRouteBuilder MapYouTubeEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -55,9 +55,11 @@ public static class YouTubeEndpoints
                             detail: exception.Message);
                     }
                 })
+            .RequireRateLimiting(YouTubeRateLimiting.SearchPolicy)
             .Produces<IReadOnlyList<YouTubeSearchResultDto>>()
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests)
             .ProducesProblem(StatusCodes.Status502BadGateway);
 
         youtube.MapPost(
@@ -67,6 +69,8 @@ public static class YouTubeEndpoints
                     YouTubeIngestionService service,
                     RoomRegistry registry,
                     IOptions<FeatureOptions> features,
+                    HttpContext httpContext,
+                    ILoggerFactory loggerFactory,
                     CancellationToken cancellationToken) =>
                 {
                     if (!features.Value.EnableYouTubeIngestion)
@@ -91,13 +95,18 @@ public static class YouTubeEndpoints
                             detail: $"No live room with code '{request.RoomCode}' exists.");
                     }
 
+                    var sessionTokenId = ResolveSessionTokenId(
+                        httpContext,
+                        room,
+                        loggerFactory.CreateLogger(typeof(YouTubeEndpoints)));
+
                     var ack = await service
                         .EnqueueAsync(
                             room,
                             string.IsNullOrWhiteSpace(request.RequestedByName)
                                 ? "Guest"
                                 : request.RequestedByName.Trim(),
-                            sessionTokenId: null,
+                            sessionTokenId,
                             new YouTubeQueueRequest(
                                 request.VideoId,
                                 request.Title ?? string.Empty,
@@ -109,10 +118,12 @@ public static class YouTubeEndpoints
 
                     return ack.Success ? Results.Ok(ack) : Failure(ack);
                 })
+            .RequireRateLimiting(YouTubeRateLimiting.EnqueuePolicy)
             .Produces<QueueAck>()
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
-            .ProducesProblem(StatusCodes.Status404NotFound);
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return endpoints;
     }
@@ -121,6 +132,38 @@ public static class YouTubeEndpoints
         statusCode: StatusCodes.Status403Forbidden,
         title: "YouTube ingestion is disabled",
         detail: "This server runs with Features:EnableYouTubeIngestion = false.");
+
+    /// <summary>
+    /// Resolves the optional <see cref="YouTubeHttpHeaders.SessionToken"/> header to the joining
+    /// participant's ownership id. A missing, malformed, or stale token falls back to <c>null</c>
+    /// so anonymous REST callers keep working; the fallback is logged for diagnostics.
+    /// </summary>
+    internal static Guid? ResolveSessionTokenId(
+        HttpContext httpContext,
+        RoomState room,
+        ILogger logger)
+    {
+        var header = httpContext.Request.Headers[YouTubeHttpHeaders.SessionToken].ToString();
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            return null;
+        }
+
+        if (!Guid.TryParse(header.Trim(), out var sessionTokenId))
+        {
+            LogInvalidSessionToken(logger, room.Code);
+            return null;
+        }
+
+        var participant = room.FindParticipantBySessionToken(sessionTokenId);
+        if (participant is null)
+        {
+            LogUnknownSessionToken(logger, room.Code);
+            return null;
+        }
+
+        return participant.SessionTokenId;
+    }
 
     private static IResult Failure(QueueAck ack) => ack.Reason switch
     {
@@ -133,6 +176,10 @@ public static class YouTubeEndpoints
             statusCode: StatusCodes.Status404NotFound,
             title: "Song not found",
             detail: "The requested song does not exist."),
+        HubErrorCodes.QueueFull => Results.Problem(
+            statusCode: StatusCodes.Status429TooManyRequests,
+            title: "YouTube queue is full",
+            detail: "Too many downloads are already pending. Retry once an earlier download finishes."),
         HubErrorCodes.DownloadUnavailable => Results.Problem(
             statusCode: StatusCodes.Status409Conflict,
             title: "YouTube download unavailable",
@@ -142,4 +189,10 @@ public static class YouTubeEndpoints
             title: "YouTube enqueue failed",
             detail: ack.Reason ?? "The item could not be enqueued."),
     };
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring malformed session token header for room {RoomCode}")]
+    private static partial void LogInvalidSessionToken(ILogger logger, string roomCode);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring session token that no participant in room {RoomCode} holds")]
+    private static partial void LogUnknownSessionToken(ILogger logger, string roomCode);
 }

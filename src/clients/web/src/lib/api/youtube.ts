@@ -1,4 +1,5 @@
 import type { components } from './schema';
+import { SESSION_TOKEN_HEADER } from '../signalr/protocol';
 
 /**
  * REST client for the zero-key YouTube surface (`/api/youtube/*`). The generated OpenAPI schema
@@ -166,27 +167,40 @@ async function request<T>(
 }
 
 /** Searches YouTube through the stage REST API. Empty queries never hit the network. */
-export async function searchYouTube(query: string, maxResults = 10): Promise<YouTubeSearchResult[]> {
+export async function searchYouTube(
+  query: string,
+  maxResults = 10,
+  sessionToken?: string | null,
+): Promise<YouTubeSearchResult[]> {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return [];
   }
 
   const params = new URLSearchParams({ query: trimmed, maxResults: String(maxResults) });
+  const headers = sessionToken ? { [SESSION_TOKEN_HEADER]: sessionToken } : undefined;
   return request<YouTubeSearchResult[]>(
     `/api/youtube/search?${params.toString()}`,
-    { method: 'GET' },
+    { method: 'GET', headers },
     { timeoutMs: SEARCH_TIMEOUT_MS, search: true },
   );
 }
 
 /** Enqueues one search result for the room and remembers it for a same-session retry. */
-export async function enqueueYouTube(requestBody: YouTubeEnqueueRequest): Promise<YouTubeQueueAck> {
+export async function enqueueYouTube(
+  requestBody: YouTubeEnqueueRequest,
+  sessionToken?: string | null,
+): Promise<YouTubeQueueAck> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (sessionToken) {
+    headers[SESSION_TOKEN_HEADER] = sessionToken;
+  }
+
   const ack = await request<YouTubeQueueAck>(
     '/api/youtube/enqueue',
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(requestBody),
     },
     { timeoutMs: ENQUEUE_TIMEOUT_MS, search: false },

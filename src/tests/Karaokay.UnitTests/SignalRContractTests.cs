@@ -111,13 +111,72 @@ public sealed class SignalRContractTests
 
         var typescriptConstants = ParseConstObject(ReadProtocol(), "HUB_ERROR_CODES");
 
+        Assert.Equal(9, csharpConstants.Count);
         Assert.Equal(
             csharpConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal),
             typescriptConstants.OrderBy(pair => pair.Key, StringComparer.Ordinal));
         Assert.All(typescriptConstants, pair => Assert.Equal(pair.Key, pair.Value));
     }
 
+    private static readonly string[] HubDtoRecordNameList =
+    [
+        nameof(JoinRequest),
+        nameof(JoinAck),
+        nameof(RoomSnapshot),
+        nameof(QueueItemDto),
+        nameof(SongDto),
+        nameof(QueueDelta),
+        nameof(PlaybackStateDto),
+        nameof(HubErrorDto),
+        nameof(PingPayload),
+        nameof(Pong),
+        nameof(QueueAck),
+        nameof(YouTubeQueueRequest),
+        nameof(YouTubeSearchResultDto),
+        nameof(StageCapabilities),
+        nameof(DownloadProgressDto),
+        nameof(SongReadyDto),
+        nameof(DownloadFailedDto),
+        nameof(CountdownDto),
+        nameof(LyricsDto),
+    ];
+
+    public static TheoryData<string> HubDtoRecordNames => new(HubDtoRecordNameList);
+
+    [Fact]
+    public void HubDtoRecordSetIsComplete()
+    {
+        // Mirrors the HubErrorCodes count guard: a new contracts record must be added here or the
+        // per-record field-shape theory silently stops covering it.
+        Assert.Equal(19, HubDtoRecordNameList.Length);
+    }
+
+    [Theory]
+    [MemberData(nameof(HubDtoRecordNames))]
+    public void HubDtoFieldsMatchTheTypeScriptInterfaces(string recordName)
+    {
+        var recordType = typeof(JoinRequest).Assembly.GetType(
+            $"Karaokay.Contracts.Hubs.{recordName}");
+        Assert.NotNull(recordType);
+
+        var csharpFields = recordType!
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Select(property => ToCamelCase(property.Name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        var typescriptFields = ParseInterfaceFields(ReadProtocol(), recordName)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(csharpFields.Count, typescriptFields.Count);
+        Assert.Equal(csharpFields, typescriptFields);
+    }
+
     private static string ReadProtocol() => File.ReadAllText(ProtocolPath);
+
+    private static string ToCamelCase(string pascalCase) =>
+        char.ToLowerInvariant(pascalCase[0]) + pascalCase[1..];
 
     private static IReadOnlyCollection<string> InterfaceMethodNames(Type interfaceType) =>
     [

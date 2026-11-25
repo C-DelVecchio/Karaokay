@@ -27,6 +27,7 @@ builder.Services.AddSingleton<RoomRegistry>();
 builder.Services.AddSingleton<RoomService>();
 builder.Services.AddSingleton<QueueService>();
 builder.Services.AddSingleton<IYouTubeService, YtDlpClient>();
+builder.Services.AddSingleton<IMediaCodecProbe, FfprobeMediaCodecProbe>();
 builder.Services.AddSingleton<DownloadJobChannel>();
 builder.Services.AddSingleton<DownloadJobCoordinator>();
 builder.Services.AddSingleton<YouTubeIngestionService>();
@@ -34,6 +35,7 @@ builder.Services.AddHostedService<MediaDownloadWorker>();
 
 builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
+builder.Services.AddYouTubeRateLimiting();
 
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -62,6 +64,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
 var app = builder.Build();
 
 app.UseCors();
+app.UseRateLimiter();
 
 app.MapHealthChecks("/healthz");
 app.MapOpenApi();

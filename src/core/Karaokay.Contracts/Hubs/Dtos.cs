@@ -94,6 +94,12 @@ public static class HubErrorCodes
     /// </summary>
     public const string DownloadUnavailable = "DownloadUnavailable";
 
+    /// <summary>
+    /// The bounded download queue or the per-room/global pending cap rejected the request. The queue
+    /// row was marked <c>Failed</c> and the guest may retry once other downloads finish.
+    /// </summary>
+    public const string QueueFull = "QueueFull";
+
     /// <summary>The operation is valid but not implemented in this slice/build.</summary>
     public const string NotImplemented = "NotImplemented";
 }

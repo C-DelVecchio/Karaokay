@@ -26,6 +26,7 @@ public sealed partial class MediaDownloadWorker : BackgroundService
     private readonly DownloadJobChannel _queue;
     private readonly DownloadJobCoordinator _coordinator;
     private readonly IYouTubeService _youtube;
+    private readonly IMediaCodecProbe _codecProbe;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly RoomRegistry _registry;
     private readonly QueueService _roomQueue;
@@ -38,6 +39,7 @@ public sealed partial class MediaDownloadWorker : BackgroundService
         DownloadJobChannel queue,
         DownloadJobCoordinator coordinator,
         IYouTubeService youtube,
+        IMediaCodecProbe codecProbe,
         IServiceScopeFactory scopeFactory,
         RoomRegistry registry,
         QueueService roomQueue,
@@ -51,6 +53,7 @@ public sealed partial class MediaDownloadWorker : BackgroundService
         _queue = queue;
         _coordinator = coordinator;
         _youtube = youtube;
+        _codecProbe = codecProbe;
         _scopeFactory = scopeFactory;
         _registry = registry;
         _roomQueue = roomQueue;
@@ -133,6 +136,8 @@ public sealed partial class MediaDownloadWorker : BackgroundService
                 var result = await DownloadWithProgressAsync(job, ticket, stagingDirectory, cancellationToken)
                     .ConfigureAwait(false);
 
+                await EnsureCodecsAsync(job, result.FilePath, cancellationToken).ConfigureAwait(false);
+
                 job.Stage = DownloadStage.Transcoding;
                 await PersistJobAsync(job, cancellationToken).ConfigureAwait(false);
                 await BroadcastProgressAsync(job, ticket, cancellationToken).ConfigureAwait(false);
@@ -151,6 +156,13 @@ public sealed partial class MediaDownloadWorker : BackgroundService
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (CodecMismatchException exception)
+            {
+                // A deterministic codec mismatch cannot be fixed by retrying the same source.
+                failureReason = exception.Message;
+                LogCodecMismatch(_logger, job.VideoId, exception.Message);
+                break;
             }
             catch (Exception exception)
             {
@@ -204,6 +216,30 @@ public sealed partial class MediaDownloadWorker : BackgroundService
         {
             progressChannel.Writer.TryComplete();
             await pump.ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Verifies the downloaded file is really H.264/AAC before it is promoted to <c>Ready</c>.
+    /// A missing FFprobe is logged and tolerated (same fail-soft policy as <c>StemMixer</c>); a
+    /// completed probe with other codecs fails the job with a clear reason.
+    /// </summary>
+    private async Task EnsureCodecsAsync(
+        DownloadJob job,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        var probe = await _codecProbe.ProbeAsync(filePath, cancellationToken).ConfigureAwait(false);
+        switch (probe.Outcome)
+        {
+            case CodecProbeOutcome.Unavailable:
+                LogCodecProbeUnavailable(_logger, job.VideoId, probe.Detail);
+                return;
+            case CodecProbeOutcome.Mismatch:
+                throw new CodecMismatchException(
+                    $"Downloaded media for {job.VideoId} is not H.264/AAC: {probe.Detail}");
+            default:
+                return;
         }
     }
 
@@ -532,6 +568,9 @@ public sealed partial class MediaDownloadWorker : BackgroundService
         public void Report(DownloadProgressInfo value) => writer.TryWrite(value);
     }
 
+    /// <summary>Deterministic post-download codec assertion failure; bypasses the retry loop.</summary>
+    private sealed class CodecMismatchException(string message) : Exception(message);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "YouTube download worker started")]
     private static partial void LogWorkerStarted(ILogger logger);
 
@@ -558,4 +597,10 @@ public sealed partial class MediaDownloadWorker : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not delete staging directory {Directory}")]
     private static partial void LogStagingCleanupFailed(ILogger logger, string directory, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "FFprobe is unavailable; skipping the H.264/AAC assertion for {VideoId}: {Detail}")]
+    private static partial void LogCodecProbeUnavailable(ILogger logger, string videoId, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Downloaded media for {VideoId} failed the H.264/AAC assertion: {Detail}")]
+    private static partial void LogCodecMismatch(ILogger logger, string videoId, string detail);
 }
