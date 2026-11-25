@@ -22,7 +22,8 @@
 > [ADR-003](adr/003-dual-mode-stage-web-vs-native.md) ·
 > [ADR-004](adr/004-dual-source-media-pipeline.md) ·
 > [ADR-005](adr/005-slice-1-blueprint-reconciliations.md) ·
-> [ADR-006](adr/006-line-wrapping-ownership.md)
+> [ADR-006](adr/006-line-wrapping-ownership.md) ·
+> [ADR-007](adr/007-slice-4-5-deliverable-ordering.md)
 
 ## Table of Contents
 

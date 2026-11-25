@@ -1,0 +1,163 @@
+# Slice 4 Review — YouTube Ingestion Landed Early; Playback Authority Still Owed
+
+- **Date:** 2026-11-25
+- **Scope:** Commit `324da8a` ("feat(slice-4): YouTube search, yt-dlp download worker, stage
+  video mode & guest YouTube UI"), reviewed against
+  [ARCHITECTURE.md](../ARCHITECTURE.md) v1.2 §5.1, §5.3, and §7 (Slice 4 and Slice 5),
+  [ADR-001](../adr/001-single-replica-signalr-azure.md),
+  [ADR-007](../adr/007-slice-4-5-deliverable-ordering.md), and the
+  [slice-3 review](slice-3-review.md) (M4/M5)
+- **Follow-up:** two changes landed after the reviewed commit: this documentation record (the
+  review, ADR-007, and the PROJECT_STATE correction) and a separate code follow-up. The code
+  follow-up landed majors **M3–M5**, strict H.264/AAC enforcement, the development-path cleanup,
+  the CI requires-Docker gate, and DTO field-parity contract tests; the remaining minor/nit backlog
+  stays open.
+
+## a) Verdicts
+
+**Pass 1 — static audit — SHIP-WITH-MAJORS.** The delivered code is a coherent, well-tested
+implementation of the documented **Slice 5** (zero-key YouTube search, `yt-dlp` worker, cache,
+progress streaming, guest UI, and stage video surface). It is not the documented **Slice 4**.
+At `324da8a`, `PlaybackAuthority`, the watchdog, `Ping`/`Pong` clock offset filtering,
+authoritative stage playback, cold-start rehydration, and the duplicate-end race the blueprint
+describes were absent. (The clock-offset filter has since landed in the follow-up; see sections b
+and c.) The commit title mislabels the deliverable, and the state documents were left describing a
+different shipped feature set.
+
+**Pass 2 — execution matrix on `324da8a` — SHIP-WITH-MAJORS.** The delivered Slice 5 surface is
+mergeable subject to the hardening that has since landed in section b. The Slice 4 definition of
+done is **not met**; see section c.
+
+Verified-good outcomes measured at `324da8a`:
+
+- `dotnet build karaokay.sln` — 0 warnings, 0 errors.
+- `dotnet test` — **131 unit + 11 architecture + 29 integration passing**; the remaining **22
+  Docker-gated integration tests skipped** locally.
+- Vitest — **78 passed**.
+- Playwright — **9 passed**.
+- Generated OpenAPI artifacts — regenerated and **byte-identical**; no drift.
+- SignalR parity — **exact**: 15 client→server methods, 14 server→client methods, with enum names
+  and values matching.
+- Binary-media guard — clean.
+
+## b) Follow-up fixes (landed after this documentation change)
+
+These landed in the follow-up change. They stay recorded here so the review trail shows what was
+owed and where each fix lives.
+
+| # | Fix | Evidence | Status |
+|---:|---|---|---|
+| M3 | Video sync must use a server-clock offset (Slice 4 `Ping`/`Pong` + median filter) instead of the local wall clock, or state clearly that it is unsynchronized. | `src/clients/web/src/features/stage/videoSync.ts:52-76`; `src/clients/web/src/features/stage/useStageVideo.ts:161-196` | **Landed.** |
+| M4 | Download-channel backpressure must not block HTTP/hub request paths; decouple admission from the bounded `Channel` and surface a clean busy/queue response. | `src/apps/Karaokay.Api/Features/YouTubeIngestionService.cs:167-175,230-244,333-358,399-405`; `src/apps/Karaokay.Api/Endpoints/YouTubeRateLimiting.cs` | **Landed.** |
+| M5 | `/api/youtube/search` and `/api/youtube/enqueue` need authentication/authorization, rate limiting, and a process cap; the REST enqueue currently passes `sessionTokenId: null`. | `src/apps/Karaokay.Api/Endpoints/YouTubeEndpoints.cs:98-118,141-166`; `src/apps/Karaokay.Api/Endpoints/YouTubeRateLimiting.cs:21-25,52-80` | **Landed.** |
+| Format | Enforce H.264/AAC with strict format filters and an `ffprobe` assertion; `-S vcodec:h264,acodec:aac` is currently a sort preference with fallbacks. | `src/core/Karaokay.Infrastructure/MediaIngest/YtDlpCommandBuilder.cs:69-73`; `src/core/Karaokay.Infrastructure/MediaIngest/YtDlpClient.cs:167-186` | **Landed.** |
+| Paths | Remove machine-specific absolute `yt-dlp`/Node/FFmpeg paths from development settings. | `src/apps/Karaokay.Api/appsettings.Development.json:10-16` | **Landed.** |
+| CI gate | Add a require-Docker switch so the Docker-gated integration tests fail instead of silently skipping when CI's container runtime is unavailable. | Integration fixtures | **Landed.** |
+| Contract test | Extend `SignalRContractTests` from method/enum parity to DTO field-shape parity. | `src/tests/Karaokay.UnitTests/SignalRContractTests.cs` | **Landed.** |
+
+## c) Majors — verdict and disposition
+
+| # | Finding | Status | Direction |
+|---:|---|---|---|
+| M1 | **Scope mislabel.** Commit `324da8a` says Slice 4 but implements documented Slice 5. | **Resolved by this documentation change + [ADR-007](../adr/007-slice-4-5-deliverable-ordering.md).** | Keep the original spec; credit YouTube as early Slice 5; mark Slice 4 partial/open. |
+| M2 | **Slice 4 definition of done not met.** At `324da8a`: no `PlaybackAuthority`/watchdog, no `Ping`/`Pong` + offset filter, no authoritative stage playback, no cold-start rehydration, no duplicate-end idempotency against the watchdog. The offset filter has since landed (M3); the rest stays open. Slice 3 review **M4** and **M5** remain open. | **Open — clock sync landed; remainder planned next.** | Implement the unchanged Slice 4 scope; do not call the slice complete. |
+| M3 | **Video sync depends on unsynchronized wall clocks.** `expectedPositionMs` extrapolates `PositionMs + (Date.now() − TimeAnchorUtc)` with no server-offset correction; `useStageVideo` feeds it `Date.now()`. On a client whose clock is off by seconds, the hard-nudge path chases a permanently wrong target. | **Landed in follow-up.** | Consume the Slice 4 `Ping`/`Pong` offset and anchor calculation, or disable nudge corrections when no offset is known. `videoSync.ts:52-76`, `useStageVideo.ts:161-196`. |
+| M4 | **Bounded download channel blocks request paths.** Capacity 4 with `BoundedChannelFullMode.Wait` means `EnqueueAsync` can await indefinitely from a REST request or hub invocation. | **Landed in follow-up.** | Use `TryWrite`/timeout with a clean busy response, or an unbounded admission queue with a separate bounded worker. `YouTubeIngestionService.cs:286`, `YouTubeEndpoints.cs:94`, `StageHub.cs:182-189`. |
+| M5 | **Unauthenticated, unthrottled, uncapped `yt-dlp` spawning.** REST search and enqueue are open; each enqueue can start a download process; the REST path records `sessionTokenId: null`. | **Landed in follow-up.** | Require identity or a feature gate, rate-limit per source, cap concurrent/total jobs, and bind the queue row to the caller's token. `YouTubeEndpoints.cs:100`. |
+| Format | **H.264/AAC is a preference, not an enforced contract.** `-S` sorts codecs but allows fallbacks; no `ffprobe` verification of the produced MP4. | **Landed in follow-up.** | Add strict format filters and assert H.264 video + AAC audio in MP4 before promoting the job to `Ready`. `YtDlpCommandBuilder.cs:69-73`. |
+
+## d) Minor backlog — not being fixed in this change
+
+Ordered by rough priority. Item 1 landed in the follow-up change; items 2–16 remain open or
+partially landed.
+
+| # | Finding | File | Status / suggested fix |
+|---:|---|---|---|
+| 1 | Machine-specific absolute paths in development settings (`yt-dlp`, Node, FFmpeg). | `src/apps/Karaokay.Api/appsettings.Development.json:10-16` | **Landed in follow-up.** Use `PATH` lookup or documented environment overrides. |
+| 2 | Hub invocations pass `CancellationToken.None`, so a disconnecting client cannot cancel queue/playback work. | `src/apps/Karaokay.Api/Hubs/StageHub.cs:141,210,222,244,251,258,265,272,282,289` | **Partially landed.** `SearchYouTube` and `EnqueueYouTubeSong` now pass `Context.ConnectionAborted`; the listed queue/playback calls still pass `CancellationToken.None`. |
+| 3 | `MediaDownloadWorker.ExecuteAsync` rethrows on host stop without completing the in-flight ticket, leaving `Downloading` rows/targets behind. | `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:76-78,151-153` | **Open.** Complete or fail the ticket in a cancellation/finally path before rethrowing. |
+| 4 | Unbounded progress channel(s) can grow if the pump falls behind a fast producer. | `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:183,532` | **Open.** Bound the channel and drop/coalesce stale progress samples. |
+| 5 | The `finally` block can mask the original `yt-dlp` exception when the progress pump also faults. | `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:203-207` | **Open.** Await the pump without replacing the primary exception, or aggregate. |
+| 6 | No playability verification of the downloaded file; `FindDownloadedFile` accepts a non-MP4 largest candidate. | `src/core/Karaokay.Infrastructure/MediaIngest/YtDlpClient.cs:167-186` | **Open.** The format fix adds a targeted `ffprobe` assertion but not a general playability probe; full probe remains backlog. |
+| 7 | `File.Move` assumes the cache and staging directories are on the same volume. | `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:141` | **Open.** Fall back to copy-then-delete when `IOException` indicates cross-volume. |
+| 8 | Partial success can leave some queue rows `Downloading` when a multi-target completion loop throws partway. | `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:269-325` | **Open.** Persist per-target state independently and fail remaining targets on error. |
+| 9 | `ResolveSongAsync` persists the `Song` before queue admission; a rejected enqueue leaves an orphan song row. | `src/apps/Karaokay.Api/Features/YouTubeIngestionService.cs:124,162-165` (song written at `:313-330`) | **Open.** Create the song inside the same transaction as the queue row, or delete it on rejection. |
+| 10 | REST enqueue trusts caller-supplied `Title`, `Channel`, `DurationSeconds`, and `ThumbnailUrl`. | `src/core/Karaokay.Contracts/YouTubeHttpDtos.cs:12-15` | **Open.** Re-resolve metadata from the video id or validate against the search result. |
+| 11 | Stale roadmap/state claims (YouTube unbuilt, `DownloadJob` planned, Slice 4 next, old test counts). | `docs/PROJECT_STATE.md` | **Resolved by this documentation change.** |
+| 12 | **MIN-1 — the global 16 pending-download cap is unreachable.** `DownloadJobChannel.Capacity` is 4, so the channel rejects before `MaxPendingDownloadsGlobal` can bind; channel capacity is the effective global bound. | `src/apps/Karaokay.Api/Features/YouTubeIngestionService.cs:43,357-379`; `src/core/Karaokay.Application/Downloads/DownloadJobChannel.cs:14` | **Open.** Raise `DownloadJobChannel.Capacity` or document the effective global bound. |
+| 13 | **MIN-2 — an ffprobe process failure burns the retry budget as a non-retryable mismatch.** `ExitCode != 0` or unparseable output maps to `Mismatch`, which the worker treats as deterministic. | `src/core/Karaokay.Infrastructure/MediaIngest/MediaCodecProbe.cs:97-102`; `src/apps/Karaokay.Api/Features/MediaDownloadWorker.cs:160-165` | **Open.** Add a distinct retryable `ProbeFailed` outcome. |
+| 14 | **MIN-3 — the probe resolves ffprobe from `PATH` only.** `YtDlp.FfmpegLocation` is ignored, so hosts with a custom FFmpeg location silently lose codec enforcement. | `src/core/Karaokay.Infrastructure/MediaIngest/MediaCodecProbe.cs:51`; `src/apps/Karaokay.Api/Program.cs:30` | **Open.** Prefer `YtDlp.FfmpegLocation` when resolving ffprobe. |
+| 15 | **MIN-4 — the enqueue bucket is one 4/min bucket per IP for a whole NAT'd party.** `QueueFull` rejections still consume permits. | `src/apps/Karaokay.Api/Endpoints/YouTubeRateLimiting.cs:25` | **Open.** Consider 20/min and/or partitioning by session token as well. |
+| 16 | **MIN-5 — hub `SearchYouTube` remains unthrottled yt-dlp spawning.** The REST rate limiter covers only `/api/youtube`. | `src/apps/Karaokay.Api/Hubs/StageHub.cs:108-135` | **Open.** Add a per-room/connection search budget or document the residual risk. |
+
+## e) Nits — backlog
+
+- Double seek in the paused hard-nudge path: `useStageVideo.ts:193-195` seeks again after the earlier
+  `:165-167` branch already did.
+- Unbounded `reportedEndsRef`, `youtubeSongIds`, and `rememberedRequests` growth in the stage/remote
+  reducers; prune by queue item id when history is removed.
+- `retryYouTubeSong` leaves dead `Failed` rows behind, and per-item retry state never resets.
+- `SearchYouTube` maps upstream failures to `InvalidRequest` (`StageHub.cs:126-130`); use a distinct
+  upstream/download-unavailable code.
+- `YouTubeEndpoints` returns `YouTubeServiceException.Message`, including the `yt-dlp` stderr tail
+  (`:55`, `:143`); log the detail server-side and return a generic client message.
+- `SongCatalog` accepts an optional `IOptions<YtDlpOptions>? = null` constructor parameter; make the
+  dependency explicit or remove the null branch.
+- `YtDlpClient` accumulates stdout/stderr in unbounded `StringBuilder`s (`:121-138`); cap the
+  retained tail.
+- Playwright `runStamp` temp directories are never removed, and `reuseExistingServer: !CI` can reuse
+  a stale server across runs.
+- `RoomRegistry.FindByQueueItemId` scans every room; index by queue item if the hot path grows.
+- `DownloadJob.VideoId` is `varchar(64)` for an 11-character id; tighten to 11 or document the
+  headroom.
+- `YouTubeCachePaths.IsUnder` uses `StringComparison.Ordinal`; Windows path checks should be
+  case-insensitive.
+- Redundant job-row delete: `TryQueueJobAsync` already deletes on a rejected write
+  (`YouTubeIngestionService.cs:428`), and the queue-full branch deletes again (`:240`). Keep one
+  best-effort delete.
+- `searchYouTube`'s `sessionToken` parameter has no caller, and `GET /api/youtube/search` never
+  reads the header (`src/clients/web/src/lib/api/youtube.ts:170-187`). Wire it deliberately or drop
+  it.
+- `YouTubeEndpoints` creates an `ILogger` per request via `loggerFactory.CreateLogger`
+  (`YouTubeEndpoints.cs:73,101`); inject `ILogger<YouTubeEndpoints>` instead.
+- `clockOffsetMs` state re-renders `StageShell` on every clock sample even though no consumer reads
+  it (`useStageRoom.ts:62,134-136`); keep it in a ref or remove it.
+- `clockSync.ts:239-241` can return from `tick` without rescheduling when a same-generation exchange
+  is already in flight; confirm the in-flight path always schedules the next tick.
+- `PROJECT_STATE.md:179` still describes the stage video sync as local-clock-driven in the present
+  tense even though the follow-up landed the §5.3 offset filter; update or scope that sentence.
+- `PROJECT_STATE.md` §2.4 does not mention the new per-IP rate limits or the admission caps.
+- Cached files bypass the codec assertion (`MediaDownloadWorker.cs:105-116`), so a VP9 cache entry
+  written before format enforcement remains servable; consider re-probing or invalidating the cache.
+- The rate limiter's partition dictionary grows per distinct IP with no eviction
+  (`YouTubeRateLimiting.cs:72-80`); acceptable now, but note it for the Slice 6 public demo.
+
+## f) Verification blind spots
+
+- **Docker-gated tests can no longer skip silently in CI.** 25 integration tests require Docker and
+  skip locally without it; the fixtures record a skip reason rather than failing. The require-Docker
+  switch landed in section b, so a missing container runtime now fails the CI job.
+- **Admission-control unit tests use the no-database seam.** `YouTubeIngestionServiceTests` runs
+  without a `KaraokayDbContext`, so its "no DownloadJobs row persisted" assertion means "no
+  database seam and no live ticket", not a literal row-count check against Postgres. The
+  Docker-gated integration suite covers the persisted queue-row side.
+- **SignalR contract tests now cover DTO field shapes.** The follow-up extended them beyond
+  method-name and enum parity, so a renamed or missing DTO property fails the contract test.
+- **Three dead contract entries.** `CountdownTicked`, `LyricsLoaded`, and `SearchCompleted` are
+  declared on `IStageHubClient` but are never sent by the server or handled by the clients. They
+  imply features that do not exist.
+- **Guest YouTube flow is REST-only.** `YouTubeTab` calls `/api/youtube`, so the hub
+  `SearchYouTube`/`EnqueueYouTubeSong` methods are covered only by integration tests; the primary
+  guest path does not exercise them end-to-end.
+
+## g) Carry-forward
+
+The remaining Slice 4 work is not optional and is planned next: `PlaybackAuthority` + watchdog,
+authoritative stage playback (M5), cold-start rehydration (M4), and duplicate-end idempotency. The
+`Ping`/`Pong` + median offset filter has landed for the web stage video path (M3), but the
+authoritative stage audio calibration and phone countdown rings in §5.3 still depend on that
+remaining work. Slice 3 review M4/M5 stay open until those land.
+
+The follow-up majors (M3–M5, strict format enforcement, development paths, CI Docker gating, DTO
+parity) landed with tests. The minor/nit backlog in sections d and e is carried forward rather than
+rediscovered; none of it blocks the documentation correction in this change.

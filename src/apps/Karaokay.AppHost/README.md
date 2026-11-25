@@ -1,11 +1,11 @@
 # Karaokay.AppHost
 
-Placeholder for the **.NET Aspire orchestrator** used in self-host mode
+The **.NET Aspire orchestrator** for self-host mode
 (see `docs/ARCHITECTURE.md` §3).
 
-This project currently does nothing beyond printing a placeholder message.
-Full Aspire orchestration wiring — API project, SQL Server/Postgres resource,
-media volume mount, and the yt-dlp sidecar — arrives in **Slice 3**.
+This project starts PostgreSQL and the API for local development. The earlier
+"placeholder / arrives in Slice 3" status was stale; the Aspire wiring is part of the
+Slice 3 self-host experience.
 
 ```bash
 dotnet run --project src/apps/Karaokay.AppHost
