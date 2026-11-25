@@ -134,9 +134,20 @@ partially landed.
 
 ## f) Verification blind spots
 
-- **Docker-gated tests can no longer skip silently in CI.** 25 integration tests require Docker and
-  skip locally without it; the fixtures record a skip reason rather than failing. The require-Docker
-  switch landed in section b, so a missing container runtime now fails the CI job.
+- **The Docker gate materialized as a real CI regression.** CI run #11 was already red on `324da8a`
+  (before the M3–M5 follow-ups), and run #12 reproduced the same two failures on the current tree:
+  `HubSearchFailureSurfacesAHubErrorInsteadOfFaulting` and
+  `EnqueueRejectsAnInvalidVideoIdBeforeSchedulingADownload` failed the first time CI actually executed
+  them. Both had always been Docker-skipped locally. The causes were test-harness bugs, not product
+  regressions: the fake search passed `maxResults: 0` into a mapper that returns early for a
+  non-positive limit, so the malformed JSON was never parsed and no `HubError` was pushed; and the
+  "invalid" video id was eleven hyphens, which `VideoIdValidator` correctly accepts as URL-safe
+  base64. The fake now mirrors the real client's positive-limit clamp, the enqueue test uses a
+  genuinely invalid id (`abc;defghij`), and both tests now run locally against a DB-less
+  `WebApplicationFactory` host because neither path needs PostgreSQL.
+- **Docker-gated tests can no longer skip silently in CI.** 23 integration tests still require
+  Docker and skip locally without it; the fixtures record a skip reason rather than failing. The
+  require-Docker switch landed in section b, so a missing container runtime now fails the CI job.
 - **Admission-control unit tests use the no-database seam.** `YouTubeIngestionServiceTests` runs
   without a `KaraokayDbContext`, so its "no DownloadJobs row persisted" assertion means "no
   database seam and no live ticket", not a literal row-count check against Postgres. The

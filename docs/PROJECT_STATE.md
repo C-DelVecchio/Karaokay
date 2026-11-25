@@ -66,7 +66,9 @@ Slices 1–3 and the documented Slice 5 are **complete**; Slice 4 is **partial**
 `324da8a` is titled "slice-4" but implemented the Slice 5 YouTube pipeline, so the number in the
 commit title does not describe its contents. The original roadmap stays unchanged — see
 [ADR-007](adr/007-slice-4-5-deliverable-ordering.md). The unit and Vitest lanes pass locally; the
-Testcontainers integration tests are exercised in CI and skip locally when Docker is unavailable.
+Testcontainers PostgreSQL integration tests are exercised in CI and skip locally when Docker is
+unavailable, while the YouTube hub/REST contract edges that need no database run against a DB-less
+host everywhere.
 The Slice 3 review left four majors scheduled as later work (stage-role trust, room GC,
 cold-restart rehydration, and stage playback wiring); M2/M3 must close before the public demo, and
 M4/M5 are still open. The Slice 4 review adds hardening majors that have **landed** in a
@@ -137,9 +139,9 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
 - **Tests.** The .NET suite had **84 tests** at the reviewed commit: 11 architecture, 38 unit, and
   35 integration (29 passed + 6 Testcontainers tests skipped without Docker), for 78 passed / 6
   skipped. The M1 fix added 8 unit and 3 integration tests. After the early Slice 5 work and the
-  follow-up hardening, the current tree has **164 unit + 11 architecture + 29 integration passing**
-  (204 total), with **25 Docker-gated integration tests skipped locally**; Vitest is at **92 tests**
-  and Playwright at **9**. Numbers measured 2026-11-25.
+  follow-up hardening, the current tree has **164 unit + 11 architecture + 31 integration passing**
+  (206 passed of 229 total), with **23 Docker-gated integration tests skipped locally**; Vitest is
+  at **92 tests** and Playwright at **9**. Numbers measured 2026-11-25.
 
 The Slice 3 review is [`docs/review/slice-3-review.md`](review/slice-3-review.md). Its M1 finding —
 a guest reorder could skip a song or end the room early — is fixed; M2–M5 are recorded there as
@@ -632,7 +634,7 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 ### 4.5 `src/tests/` — the safety net
 
 - **`Karaokay.UnitTests` (164 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, and the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, and Start/Pause/Resume/Skip/Idle transitions.
-- **`Karaokay.IntegrationTests` (29 passing; 25 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, and stage-role rejection. The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path — a blind spot the Slice 4 review records. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
+- **`Karaokay.IntegrationTests` (31 passing; 23 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, and stage-role rejection. The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path — a blind spot the Slice 4 review records. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
 - **`Karaokay.ArchitectureTests` (11 tests).** These enforce layering. **Reflection** is .NET's ability to inspect assemblies and types at runtime. The tests use `Assembly.GetReferencedAssemblies()` to assert, for example, that `Contracts` never references Domain/Application/Infrastructure/DryWetMidi/CliWrap/EF Core, that `Application` never references `Infrastructure`, that CLI tools never reference the apps, and that `Domain` is a leaf. **Positive controls** assert the probe really sees a known reference, so a broken helper cannot make every rule pass vacuously. The source comment explains why reflection replaced `NetArchTest.Rules`, which misreported dependencies on .NET 10.
 
 ---
@@ -727,12 +729,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (~204 passing; 25 Docker-gated skips locally)
+dotnet test           # run unit, integration, and architecture tests (~206 passing; 23 Docker-gated skips locally)
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **204 passed / 25 skipped** on a Docker-less machine; CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **206 passed / 23 skipped** on a Docker-less machine; the two DB-less YouTube contract edges now run locally, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a

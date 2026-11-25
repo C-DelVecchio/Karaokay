@@ -8,6 +8,7 @@ using Karaokay.Contracts;
 using Karaokay.Contracts.Hubs;
 using Karaokay.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,9 +19,12 @@ namespace Karaokay.IntegrationTests;
 /// End-to-end YouTube ingestion against a real PostgreSQL container and a deterministic fake
 /// <see cref="Karaokay.Infrastructure.MediaIngest.IYouTubeService"/> (docs/ARCHITECTURE.md §7,
 /// Slice 5). Covers REST search/enqueue, Songs.VideoId dedup, SignalR progress/ready/failure events,
-/// and HTTP range serving of the cached MP4. Docker-less machines skip every test.
+/// and HTTP range serving of the cached MP4. Persistence-backed tests skip on Docker-less machines;
+/// the two contract edges that need no database run against <see cref="YouTubeNoDatabaseApiFixture"/>.
 /// </summary>
-public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
+public sealed class YouTubeIntegrationTests :
+    IClassFixture<YouTubeApiFixture>,
+    IClassFixture<YouTubeNoDatabaseApiFixture>
 {
     private const string SearchEvent = "SearchCompleted";
     private const string DownloadProgressEvent = "DownloadProgressChanged";
@@ -28,10 +32,14 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
     private const string DownloadFailedEvent = "DownloadFailed";
 
     private readonly YouTubeApiFixture _fixture;
+    private readonly YouTubeNoDatabaseApiFixture _noDatabase;
 
-    public YouTubeIntegrationTests(YouTubeApiFixture fixture)
+    public YouTubeIntegrationTests(
+        YouTubeApiFixture fixture,
+        YouTubeNoDatabaseApiFixture noDatabase)
     {
         _fixture = fixture;
+        _noDatabase = noDatabase;
     }
 
     [SkippableFact]
@@ -91,12 +99,11 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
     [SkippableFact]
     public async Task HubSearchFailureSurfacesAHubErrorInsteadOfFaulting()
     {
-        RequireDocker();
-
-        using var http = _fixture.Factory.CreateClient();
+        // Hub search never touches persistence, so this runs against the DB-less host on laptops.
+        using var http = _noDatabase.Factory.CreateClient();
         var room = await CreateRoomAsync(http).ConfigureAwait(false);
 
-        await using var connection = await ConnectAsync().ConfigureAwait(false);
+        await using var connection = await ConnectAsync(_noDatabase.Factory).ConfigureAwait(false);
         Assert.True((await JoinAsync(connection, room.Code, "Ada", "guest").ConfigureAwait(false)).Success);
 
         var errors = new ConcurrentQueue<HubErrorDto>();
@@ -104,7 +111,7 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
             "HubError",
             error => errors.Enqueue(error));
 
-        _fixture.YouTube.MalformedSearchJson = true;
+        _noDatabase.YouTube.MalformedSearchJson = true;
         try
         {
             var results = await connection
@@ -120,31 +127,32 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
         }
         finally
         {
-            _fixture.YouTube.MalformedSearchJson = false;
+            _noDatabase.YouTube.MalformedSearchJson = false;
         }
     }
 
     [SkippableFact]
     public async Task EnqueueRejectsAnInvalidVideoIdBeforeSchedulingADownload()
     {
-        RequireDocker();
-
-        using var http = _fixture.Factory.CreateClient();
+        // The video id is rejected before any persistence, so the DB-less host is sufficient.
+        using var http = _noDatabase.Factory.CreateClient();
         var room = await CreateRoomAsync(http).ConfigureAwait(false);
-        var before = _fixture.YouTube.DownloadCalls;
+        var before = _noDatabase.YouTube.DownloadCalls;
 
+        // Eleven characters, but ';' is outside the URL-safe base64 alphabet: exactly the
+        // command-injection shape VideoIdValidator rejects. (An all-hyphen id is valid by contract.)
         using var response = await http.PostAsJsonAsync(
             "/api/youtube/enqueue",
             new YouTubeEnqueueRequest(
                 room.Code,
                 "Ada",
-                "-----------",
+                "abc;defghij",
                 "Injection attempt",
                 "n/a",
                 10)).ConfigureAwait(false);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(before, _fixture.YouTube.DownloadCalls);
+        Assert.Equal(before, _noDatabase.YouTube.DownloadCalls);
     }
 
     [SkippableFact]
@@ -422,16 +430,19 @@ public sealed class YouTubeIntegrationTests : IClassFixture<YouTubeApiFixture>
     private void RequireDocker() =>
         Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason ?? "Docker unavailable.");
 
-    private async Task<HubConnection> ConnectAsync()
+    private Task<HubConnection> ConnectAsync() => ConnectAsync(_fixture.Factory);
+
+    private static async Task<HubConnection> ConnectAsync(
+        WebApplicationFactory<ApiHost::Program> factory)
     {
-        using var client = _fixture.Factory.CreateClient();
+        using var client = factory.CreateClient();
         var baseAddress = client.BaseAddress ?? new Uri("http://localhost/");
 
         var connection = new HubConnectionBuilder()
             .WithUrl(new Uri(baseAddress, "/hubs/stage"), options =>
             {
                 options.Transports = HttpTransportType.LongPolling;
-                options.HttpMessageHandlerFactory = _ => _fixture.Factory.Server.CreateHandler();
+                options.HttpMessageHandlerFactory = _ => factory.Server.CreateHandler();
             })
             .Build();
 

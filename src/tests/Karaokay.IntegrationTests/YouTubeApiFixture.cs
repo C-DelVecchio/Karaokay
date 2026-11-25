@@ -289,7 +289,11 @@ public sealed class FakeYouTubeService : IYouTubeService
         {
             // Deliberately invalid JSON: the mapper converts it into YouTubeServiceException, which
             // the hub must surface as a HubError rather than a raw JsonException invocation fault.
-            return YtDlpResultMapper.MapSearchResults("{ \"entries\": [", maxResults);
+            // The real YtDlpClient clamps maxResults to a positive default before mapping, and the
+            // mapper returns early for a non-positive limit, so mirror that clamp here or the
+            // malformed payload is never parsed.
+            var limit = maxResults > 0 ? maxResults : 10;
+            return YtDlpResultMapper.MapSearchResults("{ \"entries\": [", limit);
         }
 
         IReadOnlyList<YouTubeSearchResultDto> results = maxResults > 0
