@@ -3,9 +3,15 @@ import type { PlaybackStateDto } from '../../lib/signalr/protocol';
 import { MediaSource, PlaybackStatus } from '../../lib/signalr/protocol';
 import {
   HARD_NUDGE_MS,
+  MEDIA_ERR_ABORTED,
+  NETWORK_NO_SOURCE,
+  VIDEO_AUTOPLAY_MESSAGE,
+  VIDEO_UNAVAILABLE_MESSAGE,
   expectedPositionMs,
   isYouTubePlayback,
+  playRejectionNotice,
   videoCorrection,
+  videoFailureNotice,
   videoUrlForSong,
 } from './videoSync';
 import { stageTestClock } from './WebAudioEngine';
@@ -96,5 +102,76 @@ describe('videoCorrection', () => {
 
     expect(correction.seekMs).toBeNull();
     expect(correction.rate).toBe(1);
+  });
+});
+
+describe('video failure notices', () => {
+  function snapshot(overrides: Partial<Parameters<typeof videoFailureNotice>[0]> = {}) {
+    return {
+      videoMode: true,
+      hasSource: true,
+      errorCode: null,
+      networkState: 2, // NETWORK_LOADING
+      readyState: 0,
+      ...overrides,
+    };
+  }
+
+  it('presents the unavailable state for a media error while a YouTube song is Playing', () => {
+    const playing = playback({ status: PlaybackStatus.Playing });
+    const notice = videoFailureNotice(snapshot({
+      videoMode: isYouTubePlayback(playing),
+      errorCode: 4, // MEDIA_ERR_SRC_NOT_SUPPORTED
+      networkState: NETWORK_NO_SOURCE,
+    }));
+
+    expect(notice).toEqual({ kind: 'unavailable', message: VIDEO_UNAVAILABLE_MESSAGE });
+    expect(notice?.message).toContain('download failed');
+  });
+
+  it.each([2, 3, 4])('presents unavailable for MediaError code %i', (code) => {
+    expect(videoFailureNotice(snapshot({ errorCode: code }))?.kind).toBe('unavailable');
+  });
+
+  it('ignores MEDIA_ERR_ABORTED, which is a superseded load rather than a failure', () => {
+    expect(videoFailureNotice(snapshot({
+      errorCode: MEDIA_ERR_ABORTED,
+      networkState: NETWORK_NO_SOURCE,
+      readyState: 0,
+    }))).toBeNull();
+  });
+
+  it('maps a 404-style no-source failure even without a MediaError code', () => {
+    const notice = videoFailureNotice(snapshot({
+      networkState: NETWORK_NO_SOURCE,
+      readyState: 0,
+    }));
+
+    expect(notice?.kind).toBe('unavailable');
+  });
+
+  it('does not call a still-loading element a failure', () => {
+    expect(videoFailureNotice(snapshot({ networkState: 2, readyState: 0 }))).toBeNull();
+  });
+
+  it('only reports failures for an active video-mode element with a source', () => {
+    expect(videoFailureNotice(snapshot({ videoMode: false, errorCode: 4 }))).toBeNull();
+    expect(videoFailureNotice(snapshot({ hasSource: false, errorCode: 4 }))).toBeNull();
+  });
+
+  it('keeps autoplay blocks separate from load failures', () => {
+    expect(playRejectionNotice('NotAllowedError')).toEqual({
+      kind: 'autoplay-blocked',
+      message: VIDEO_AUTOPLAY_MESSAGE,
+    });
+    // The tap-to-start path is not a source failure, so the reconciliation net must stay quiet.
+    expect(videoFailureNotice(snapshot({ networkState: 1, readyState: 0 }))).toBeNull();
+  });
+
+  it('maps NotSupportedError play rejections to unavailable and ignores aborts', () => {
+    expect(playRejectionNotice('NotSupportedError')?.kind).toBe('unavailable');
+    expect(playRejectionNotice('NotReadableError')?.kind).toBe('unavailable');
+    expect(playRejectionNotice('AbortError')).toBeNull();
+    expect(playRejectionNotice(null)).toBeNull();
   });
 });

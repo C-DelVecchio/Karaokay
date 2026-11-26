@@ -16,6 +16,10 @@ import { fileURLToPath } from 'node:url';
 
 const VIDEO_ID = 'e2eTestVid1';
 const VIDEO_TITLE = 'E2E Karaoke Fixture';
+// A second id keeps the "missing cached video" spec from warming the happy-path spec's cache
+// entry when the two run in parallel against the same API process.
+const MISSING_VIDEO_ID = 'e2eTestVid2';
+const MISSING_VIDEO_TITLE = 'E2E Missing Video Fixture';
 const VIDEO_CHANNEL = 'Karaokay CI';
 const VIDEO_DURATION_SECONDS = 120;
 const PROGRESS_DELAY_MS = 400;
@@ -26,17 +30,20 @@ if (args.includes('--dump-single-json')) {
   // A 1x1 transparent PNG keeps the result thumbnail data-only (no network from the browser).
   const thumbnail =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const query = args.at(-1) ?? 'fixture';
+  const missingVideo = query.toLowerCase().includes('missing');
+  const videoId = missingVideo ? MISSING_VIDEO_ID : VIDEO_ID;
   const document = {
     _type: 'playlist',
-    id: `ytsearch:${args.at(-1) ?? 'fixture'}`,
+    id: `ytsearch:${query}`,
     title: 'karaokay e2e fixture',
     entries: [
       {
         _type: 'url',
         ie_key: 'Youtube',
-        id: VIDEO_ID,
-        url: `https://www.youtube.com/watch?v=${VIDEO_ID}`,
-        title: VIDEO_TITLE,
+        id: videoId,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        title: missingVideo ? MISSING_VIDEO_TITLE : VIDEO_TITLE,
         channel: VIDEO_CHANNEL,
         uploader: VIDEO_CHANNEL,
         duration: VIDEO_DURATION_SECONDS,

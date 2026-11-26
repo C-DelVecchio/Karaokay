@@ -167,7 +167,7 @@ public sealed partial class MediaDownloadWorker : BackgroundService
             catch (Exception exception)
             {
                 failureReason = exception.Message;
-                LogAttemptFailed(_logger, job.VideoId, attempt, maxAttempts, exception);
+                LogAttemptFailed(_logger, job.VideoId, attempt, maxAttempts, exception.Message, exception);
 
                 if (attempt < maxAttempts)
                 {
@@ -364,12 +364,20 @@ public sealed partial class MediaDownloadWorker : BackgroundService
         string reason,
         CancellationToken cancellationToken)
     {
+        // Reasons are persisted and broadcast to guest phones. Strip server-side filesystem roots
+        // first so yt-dlp diagnostics cannot reveal where the API keeps its media; the raw reason
+        // still goes to the server log below.
+        var publicReason = SanitizeFailureReason(
+            reason,
+            ResolveDirectory(_options.StagingRoot),
+            YouTubeCachePaths.ResolveDirectory(_options, _library.RootPath));
+
         job.Stage = DownloadStage.Failed;
-        job.FailureReason = Truncate(reason, 1024);
+        job.FailureReason = publicReason;
         job.CompletedAtUtc = DateTime.UtcNow;
         await PersistJobAsync(job, cancellationToken).ConfigureAwait(false);
 
-        var targets = ticket.Complete(new DownloadJobResult(false, job.FailureReason));
+        var targets = ticket.Complete(new DownloadJobResult(false, publicReason));
         _coordinator.TryRemove(ticket);
 
         if (targets.Count == 0)
@@ -393,7 +401,7 @@ public sealed partial class MediaDownloadWorker : BackgroundService
                 .DownloadFailed(new DownloadFailedDto(
                     target.QueueItemId,
                     job.SongId,
-                    reason))
+                    publicReason))
                 .ConfigureAwait(false);
         }
 
@@ -543,6 +551,46 @@ public sealed partial class MediaDownloadWorker : BackgroundService
     private static Karaokay.Contracts.Hubs.DownloadStage ToWireStage(DownloadStage stage) =>
         (Karaokay.Contracts.Hubs.DownloadStage)(int)stage;
 
+    /// <summary>
+    /// Replaces absolute staging/cache roots with neutral placeholders and then caps the text at the
+    /// persisted failure-length limit. The classification prefix is already first in the yt-dlp
+    /// message, so truncation keeps the useful diagnosis and drops the raw tails last.
+    /// </summary>
+    internal static string SanitizeFailureReason(string reason, string stagingRoot, string cacheRoot)
+    {
+        var sanitized = ReplaceRoot(reason, stagingRoot, "<staging>");
+        sanitized = ReplaceRoot(sanitized, cacheRoot, "<cache>");
+        return Truncate(sanitized, 1024);
+    }
+
+    private static string ReplaceRoot(string value, string root, string placeholder)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return value;
+        }
+
+        var trimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return value;
+        }
+
+        var replaced = value.Replace(trimmed, placeholder, StringComparison.Ordinal);
+
+        // yt-dlp may echo a Windows path with forward slashes even though the resolved root uses
+        // backslashes; the alternate form keeps the redaction effective in that case.
+        var alternate = trimmed.Replace(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        if (!string.Equals(alternate, trimmed, StringComparison.Ordinal))
+        {
+            replaced = replaced.Replace(alternate, placeholder, StringComparison.Ordinal);
+        }
+
+        return replaced;
+    }
+
     private static string Truncate(string value, int maxLength) =>
         value.Length <= maxLength ? value : value[..maxLength];
 
@@ -583,8 +631,8 @@ public sealed partial class MediaDownloadWorker : BackgroundService
     [LoggerMessage(Level = LogLevel.Information, Message = "YouTube cache already contains {VideoId}; completing job")]
     private static partial void LogCacheHit(ILogger logger, string videoId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "YouTube download attempt {Attempt}/{MaxAttempts} for {VideoId} failed")]
-    private static partial void LogAttemptFailed(ILogger logger, string videoId, int attempt, int maxAttempts, Exception exception);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "YouTube download attempt {Attempt}/{MaxAttempts} for {VideoId} failed: {Reason}")]
+    private static partial void LogAttemptFailed(ILogger logger, string videoId, int attempt, int maxAttempts, string reason, Exception exception);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "YouTube job {VideoId} completed ({Bytes} bytes)")]
     private static partial void LogJobCompleted(ILogger logger, string videoId, long bytes);

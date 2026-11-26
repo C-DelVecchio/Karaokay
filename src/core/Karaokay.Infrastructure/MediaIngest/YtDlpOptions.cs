@@ -19,7 +19,11 @@ public sealed class YtDlpOptions
     /// </summary>
     public List<string> JsRuntimes { get; set; } = [];
 
-    /// <summary>Optional FFmpeg location passed as <c>--ffmpeg-location</c> for the merge step.</summary>
+    /// <summary>
+    /// Optional FFmpeg location passed as <c>--ffmpeg-location</c> for the merge step. A bare
+    /// command name is resolved through <c>PATH</c>; if it cannot be found the flag is omitted so
+    /// yt-dlp can perform its own lookup.
+    /// </summary>
     public string? FfmpegLocation { get; set; }
 
     /// <summary>

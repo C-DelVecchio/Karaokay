@@ -112,6 +112,7 @@ export function StageShell() {
     },
   });
   const videoMode = video.mode === 'video';
+  const videoUnavailable = videoMode && video.notice?.kind === 'unavailable';
   const roomActive = roomPlayback.status.active && !videoMode;
   const effectivePhase: StagePhase = roomActive
     ? stagePhaseForRoom(roomPlayback.status.phase)
@@ -361,6 +362,7 @@ export function StageShell() {
       className="stage"
       data-phase={effectivePhase}
       data-video={videoMode ? 'true' : 'false'}
+      data-video-error={videoUnavailable ? 'true' : undefined}
       data-room={roomActive ? 'true' : 'false'}
       data-song-id={roomActive ? roomSong?.id : undefined}
       data-queue-item-id={roomActive ? roomPlayback.status.queueItemId ?? undefined : undefined}
@@ -418,15 +420,39 @@ export function StageShell() {
 
       <StageRoomPanel status={roomStatus} room={room} />
 
-      {videoMode && video.notice && (
+      {videoMode && video.notice?.kind === 'autoplay-blocked' && (
         <div className="stage-video-notice" role="alert">
-          <span>{video.notice}</span>
+          <span>{video.notice.message}</span>
           <button type="button" className="remote-secondary" onClick={video.retryPlayback}>
             Start video
           </button>
           <button type="button" className="remote-link" onClick={video.dismissNotice}>
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/*
+        A YouTube item whose cached MP4 never arrived used to render as a silent black surface
+        (video mode clears the canvas). This failure card replaces that ambiguity.
+      */}
+      {videoUnavailable && video.notice && (
+        <div className="stage-video-error" role="alert">
+          <div className="stage-video-error-card">
+            <p className="stage-video-error-heading">Video unavailable</p>
+            {playback?.currentSong && (
+              <p className="stage-video-error-title">{playback.currentSong.title}</p>
+            )}
+            <p className="stage-video-error-message">{video.notice.message}</p>
+            <div className="stage-video-error-actions">
+              <button type="button" className="remote-secondary" onClick={video.retryPlayback}>
+                Retry
+              </button>
+              <button type="button" className="remote-link" onClick={video.dismissNotice}>
+                Dismiss
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

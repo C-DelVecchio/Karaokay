@@ -187,10 +187,21 @@ What landed:
   server-synchronized `serverNow` (Ping/Pong min-RTT best-of-window offset), not the raw local wall clock. Slice 4
   then made this part of the authoritative path: room playback drives the stage's library stems and
   the video surface, and the stage calibrates once against its own audio clock.
+- **Stage video failure surface (2026-11-26).** A YouTube song whose cached MP4 never arrived no
+  longer renders as a silent black stage: `useStageVideo` classifies media-source and play errors,
+  and `StageShell` shows a visible "Video unavailable" card with Retry/Dismiss. Covered by
+  `videoSync` unit tests and the `youtube-video-failure` Playwright spec.
 - **Tests.** Unit coverage for video-id validation, yt-dlp JSON/progress parsing, argument arrays,
   coalescing, worker transitions, and temp cleanup; integration coverage with a deterministic
   `FakeYouTubeService` (search, dedup, SignalR progress/`SongReady`, 206 range serving); Vitest for
   reducers; and a deterministic yt-dlp-shim Playwright spec.
+- **FFmpeg merge fix (2026-11-26).** yt-dlp treats `--ffmpeg-location` as a literal path, so the
+  development value `ffmpeg` made it warn that ffmpeg did not exist and skip the merge, leaving
+  `{videoId}.fNNN.*` fragments that `FindDownloadedFile` correctly refused to promote. Bare names
+  are now resolved through `PATH` (or the flag is omitted so yt-dlp does its own lookup) before the
+  invocation. When a download still produces nothing, the failure message now carries the staged
+  filenames plus truncated yt-dlp stderr/stdout tails, with a distinct message when only `.part`
+  files remain.
 
 The feature is complete in scope, with review majors **landed** in a follow-up change:
 unsynchronized wall-clock video sync (Ping/Pong offset filter), bounded-channel backpressure on
@@ -886,12 +897,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (239 passing; 28 Docker-gated skips locally)
+dotnet test           # run unit, integration, and architecture tests (248 passing; 29 Docker-gated skips locally; 277 with Docker)
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **239 passed / 28 skipped** on a Docker-less machine (197 unit, 11 architecture, 31 integration); the two DB-less YouTube contract edges run locally, and CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **248 passed / 29 skipped** on a Docker-less machine (206 unit, 11 architecture, 31 integration); with Docker available the full suite is **277 passed / 0 skipped**, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a

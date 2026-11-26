@@ -562,6 +562,58 @@ main {
   border: 1px solid #3a4250;
 }
 
+/*
+ * A failed YouTube download must not read as a silent black stage. The transparent full-stage
+ * layer dims the video surface without stealing clicks; only the card is interactive.
+ */
+.stage-video-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgb(0 0 0 / 45%);
+  pointer-events: none;
+}
+
+.stage-video-error-card {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 30rem;
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+  background: rgb(20 26 34 / 96%);
+  border: 1px solid #6b2b33;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 55%);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.stage-video-error-heading {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #ff9c9c;
+}
+
+.stage-video-error-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.stage-video-error-message {
+  margin: 0;
+  color: #ffb4b4;
+}
+
+.stage-video-error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
 /* Stage live-room corner overlay (hidden when offline) */
 .stage-room-panel {
   position: absolute;

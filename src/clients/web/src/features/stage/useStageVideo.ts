@@ -5,8 +5,13 @@ import type { WebAudioEngine } from './WebAudioEngine';
 import {
   expectedPositionMs,
   isYouTubePlayback,
+  playRejectionNotice,
   videoCorrection,
+  videoFailureNotice,
   videoUrlForSong,
+  type MediaElementSnapshot,
+  type StageVideoNotice,
+  type StageVideoNoticeKind,
 } from './videoSync';
 
 declare global {
@@ -16,6 +21,7 @@ declare global {
       songId: string | null;
       attached: boolean;
       notice: string | null;
+      problem: StageVideoNoticeKind | null;
       currentTime: () => number;
       expectedMs: () => number;
       paused: () => boolean;
@@ -45,16 +51,26 @@ export interface StageVideoHandle {
   videoRef: RefObject<HTMLVideoElement | null>;
   mode: StageVideoMode;
   songId: string | null;
-  notice: string | null;
+  notice: StageVideoNotice | null;
   dismissNotice: () => void;
   /** Called from the unlock click so the muted element starts inside the gesture. */
   primeForUnlock: () => void;
-  /** Retry after an autoplay block, also from a gesture. */
+  /** Retry after an autoplay block or a failed source load, also from a gesture. */
   retryPlayback: () => void;
 }
 
 const SYNC_INTERVAL_MS = 500;
 const SOFT_NUDGE_RESET_MS = 5_000;
+
+function snapshotOf(video: HTMLVideoElement, videoMode: boolean): MediaElementSnapshot {
+  return {
+    videoMode,
+    hasSource: Boolean(video.getAttribute('src')),
+    errorCode: video.error?.code ?? null,
+    networkState: video.networkState,
+    readyState: video.readyState,
+  };
+}
 
 function clampSeekSeconds(video: HTMLVideoElement, seconds: number): number {
   const duration = video.duration;
@@ -88,10 +104,11 @@ export function useStageVideo({
   const onSongEndedRef = useRef(onSongEnded);
   const modeRef = useRef<StageVideoMode>('placeholder');
   const songIdRef = useRef<string | null>(null);
-  const noticeRef = useRef<string | null>(null);
+  const noticeRef = useRef<StageVideoNotice | null>(null);
+  const failureDismissedRef = useRef(false);
   const syncNowRef = useRef<() => void>(() => undefined);
   const reportedEndsRef = useRef(new Set<string>());
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<StageVideoNotice | null>(null);
 
   const songId = playback?.currentSong?.id ?? null;
   const mode: StageVideoMode = isYouTubePlayback(playback) ? 'video' : 'placeholder';
@@ -102,8 +119,18 @@ export function useStageVideo({
   modeRef.current = mode;
   songIdRef.current = mode === 'video' ? songId : null;
 
-  const updateNotice = useCallback((next: string | null) => {
-    if (noticeRef.current === next) {
+  const updateNotice = useCallback((next: StageVideoNotice | null) => {
+    const current = noticeRef.current;
+    if (
+      current === next
+      || (current && next && current.kind === next.kind && current.message === next.message)
+    ) {
+      return;
+    }
+
+    // A dismissed unavailable banner stays dismissed for this song; the 500 ms reconciliation
+    // pass would otherwise resurrect it on every tick.
+    if (next?.kind === 'unavailable' && failureDismissedRef.current) {
       return;
     }
 
@@ -119,18 +146,22 @@ export function useStageVideo({
     }
 
     if (mode !== 'video' || !songId) {
+      failureDismissedRef.current = false;
       releaseVideo(video);
       return;
     }
 
     const nextUrl = videoUrlForSong(songId);
     if (video.getAttribute('src') !== nextUrl) {
+      // A new source deserves a fresh verdict: drop any failure carried over from the last song.
+      failureDismissedRef.current = false;
+      updateNotice(null);
       video.pause();
       video.muted = true;
       video.setAttribute('src', nextUrl);
       video.load();
     }
-  }, [mode, songId]);
+  }, [mode, songId, updateNotice]);
 
   // Route the element after the one-time gesture. Idempotent on every re-render.
   useEffect(() => {
@@ -144,7 +175,8 @@ export function useStageVideo({
     }
   }, [audioUnlocked, engine, mode, songId]);
 
-  // Playback reconciliation + the video's own lifecycle events.
+  // Playback reconciliation + the video's own lifecycle events. This only runs after the one-time
+  // audio unlock; that is also where an error that fired while the gate was up is re-evaluated.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || mode !== 'video' || !audioUnlocked) {
@@ -153,15 +185,32 @@ export function useStageVideo({
 
     let softResetTimer: number | null = null;
 
+    const reportPlayRejection = (error: unknown) => {
+      const next = playRejectionNotice(error instanceof Error ? error.name : null);
+      if (next) {
+        updateNotice(next);
+      }
+    };
+
     const sync = () => {
       const current = playbackRef.current;
       if (!current || modeRef.current !== 'video') {
         return;
       }
 
+      // The error event can fire before the element has a listener (e.g. the room starts while
+      // the audio gate is still up). The immediate `sync()` below runs right after the listeners
+      // attach at unlock time, so the element's error state is recovered then; the 500 ms interval
+      // keeps the classification current for errors that happen during playback.
+      const failure = videoFailureNotice(snapshotOf(video, true));
+      if (failure) {
+        updateNotice(failure);
+        return;
+      }
+
       if (video.readyState < 1) {
         if (current.status === PlaybackStatus.Playing && video.paused) {
-          void video.play().catch(() => undefined);
+          void video.play().catch(reportPlayRejection);
         }
         return;
       }
@@ -188,11 +237,7 @@ export function useStageVideo({
 
       if (shouldPlay) {
         if (video.paused) {
-          void video.play().catch((error: unknown) => {
-            if (error instanceof Error && error.name === 'NotAllowedError') {
-              updateNotice('Tap the stage to start the video.');
-            }
-          });
+          void video.play().catch(reportPlayRejection);
         }
       } else if (!video.paused) {
         video.pause();
@@ -215,8 +260,9 @@ export function useStageVideo({
     };
 
     const handleError = () => {
-      if (modeRef.current === 'video' && video.getAttribute('src')) {
-        updateNotice('The video could not be played.');
+      const next = videoFailureNotice(snapshotOf(video, modeRef.current === 'video'));
+      if (next) {
+        updateNotice(next);
       }
     };
 
@@ -246,9 +292,10 @@ export function useStageVideo({
     syncNowRef.current();
   }, [playback]);
 
-  // A leave-video transition must not carry a stale autoplay error banner.
+  // A leave-video transition must not carry a stale autoplay/failure banner.
   useEffect(() => {
     if (mode === 'placeholder') {
+      failureDismissedRef.current = false;
       updateNotice(null);
     }
   }, [mode, updateNotice]);
@@ -267,7 +314,10 @@ export function useStageVideo({
         return Boolean(video && engine.hasMediaElementSource(video));
       },
       get notice() {
-        return noticeRef.current;
+        return noticeRef.current?.message ?? null;
+      },
+      get problem() {
+        return noticeRef.current?.kind ?? null;
       },
       currentTime: () => videoRef.current?.currentTime ?? 0,
       expectedMs: () => expectedPositionMs(playbackRef.current, serverNowRef.current()),
@@ -308,18 +358,38 @@ export function useStageVideo({
       video.muted = false;
     }
 
+    failureDismissedRef.current = false;
+    if (noticeRef.current?.kind === 'unavailable') {
+      // A failed fetch leaves the element in an error state; `load()` is the only way to ask the
+      // same URL again after the backend has recovered.
+      video.load();
+    }
+
     void video.play()
       .then(() => updateNotice(null))
-      .catch(() => updateNotice('The video could not be played.'));
+      .catch((error: unknown) => {
+        const next = playRejectionNotice(error instanceof Error ? error.name : null);
+        if (next) {
+          updateNotice(next);
+        }
+      });
     syncNowRef.current();
   }, [audioUnlocked, engine, updateNotice]);
+
+  const dismissNotice = useCallback(() => {
+    if (noticeRef.current?.kind === 'unavailable') {
+      failureDismissedRef.current = true;
+    }
+
+    updateNotice(null);
+  }, [updateNotice]);
 
   return {
     videoRef,
     mode,
     songId: songIdRef.current,
     notice,
-    dismissNotice: () => updateNotice(null),
+    dismissNotice,
     primeForUnlock,
     retryPlayback,
   };

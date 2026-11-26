@@ -250,6 +250,79 @@ public sealed class YtDlpParsingTests
         Assert.Equal(1, arguments.Count(argument => argument == "--"));
     }
 
+    [Fact]
+    public void DownloadArgumentsResolveABareFfmpegNameThroughPath()
+    {
+        // yt-dlp treats --ffmpeg-location as a literal path. A bare "ffmpeg" must become the
+        // absolute path found on PATH or the merge step is skipped (Slice 5 bugfix).
+        var arguments = YtDlpCommandBuilder.BuildDownloadArguments(
+            "dQw4w9WgXcQ",
+            "/tmp/karaokay-staging",
+            new YtDlpOptions { FfmpegLocation = "ffmpeg" },
+            resolveOnPath: name => string.Equals(name, "ffmpeg", StringComparison.Ordinal)
+                ? "/opt/tools/bin/ffmpeg"
+                : null);
+
+        var index = arguments.IndexOf("--ffmpeg-location");
+        Assert.True(index >= 0);
+        Assert.Equal("/opt/tools/bin/ffmpeg", arguments[index + 1]);
+    }
+
+    [Fact]
+    public void DownloadArgumentsOmitTheFfmpegFlagWhenABareNameIsNotOnPath()
+    {
+        // Omitting the flag is safer than passing a literal "ffmpeg" that yt-dlp cannot resolve:
+        // yt-dlp then performs its own lookup instead of warning that ffmpeg does not exist.
+        var arguments = YtDlpCommandBuilder.BuildDownloadArguments(
+            "dQw4w9WgXcQ",
+            "/tmp/karaokay-staging",
+            new YtDlpOptions { FfmpegLocation = "ffmpeg" },
+            resolveOnPath: _ => null);
+
+        Assert.DoesNotContain("--ffmpeg-location", arguments);
+        Assert.DoesNotContain("ffmpeg", arguments);
+    }
+
+    [Fact]
+    public void DownloadArgumentsPassAnExplicitFfmpegPathThroughWithoutResolvingIt()
+    {
+        var arguments = YtDlpCommandBuilder.BuildDownloadArguments(
+            "dQw4w9WgXcQ",
+            "/tmp/karaokay-staging",
+            new YtDlpOptions { FfmpegLocation = "  /opt/tools/ffmpeg  " },
+            resolveOnPath: _ => throw new InvalidOperationException("explicit paths must not be resolved"));
+
+        var index = arguments.IndexOf("--ffmpeg-location");
+        Assert.True(index >= 0);
+        Assert.Equal("/opt/tools/ffmpeg", arguments[index + 1]);
+    }
+
+    [Fact]
+    public void ExecutableLocatorFindsAnExistingBinaryInAPathDirectory()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "karaokay-path-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var fileName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+            var executable = Path.Combine(directory, fileName);
+            File.WriteAllText(executable, string.Empty);
+
+            Assert.Equal(
+                Path.GetFullPath(executable),
+                ExecutableLocator.FindOnPath("ffmpeg", [directory]));
+            Assert.Null(ExecutableLocator.FindOnPath(
+                "karaokay-not-a-real-executable",
+                [directory]));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("--flag")]
     [InlineData("-f")]

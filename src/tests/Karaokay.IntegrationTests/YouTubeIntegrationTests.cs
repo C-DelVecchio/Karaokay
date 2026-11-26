@@ -367,6 +367,80 @@ public sealed class YouTubeIntegrationTests :
     }
 
     [SkippableFact]
+    public async Task AFailedDownloadMarksTheJobFailedWithDiagnosticsAndReturnsTheRoomToIdle()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+
+        await using var connection = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(connection, room.Code, "Ada", "guest").ConfigureAwait(false)).Success);
+
+        var failed = new ConcurrentQueue<DownloadFailedDto>();
+        using var subscription = connection.On<DownloadFailedDto>(
+            DownloadFailedEvent,
+            sample => failed.Enqueue(sample));
+
+        var gate = _fixture.YouTube.HoldFailureUntilReleased(FakeYouTubeService.GatedFailVideoId);
+        var failureDetail = FakeYouTubeService.FailureDetailFor(FakeYouTubeService.GatedFailVideoId);
+        try
+        {
+            var ack = await connection.InvokeAsync<QueueAck>(
+                "EnqueueYouTubeSong",
+                new YouTubeQueueRequest(
+                    FakeYouTubeService.GatedFailVideoId,
+                    "Failure Song",
+                    "Karaokay CI",
+                    60))
+                .ConfigureAwait(false);
+            Assert.True(ack.Success);
+
+            await gate.Started.Task
+                .WaitAsync(TimeSpan.FromSeconds(15))
+                .ConfigureAwait(false);
+
+            // Starting while the head is still Downloading parks the room on AwaitingDownload.
+            await connection.InvokeAsync("StartPlayback").ConfigureAwait(false);
+            await WaitForPlaybackStatusAsync(http, room.Code, PlaybackStatus.AwaitingDownload)
+                .ConfigureAwait(false);
+
+            gate.Release.TrySetResult(true);
+
+            var failure = await WaitForSingleAsync(
+                failed,
+                item => item.QueueItemId == ack.QueueItemId,
+                TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            Assert.Contains(failureDetail, failure.Reason);
+
+            // The failure disarms the awaiting-download park; the authority resets to Idle instead
+            // of leaving the room stuck on a row that can never become playable.
+            var idle = await WaitForPlaybackStatusAsync(http, room.Code, PlaybackStatus.Idle)
+                .ConfigureAwait(false);
+            Assert.Equal(PlaybackStatus.Idle, idle.Playback.Status);
+
+            var snapshot = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+            Assert.Equal(
+                QueueItemState.Failed,
+                snapshot.Queue.Single(item => item.Id == ack.QueueItemId).State);
+
+            await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+            var database = scope.ServiceProvider.GetRequiredService<KaraokayDbContext>();
+            var job = await database.DownloadJobs
+                .AsNoTracking()
+                .SingleAsync(candidate => candidate.QueueItemId == ack.QueueItemId)
+                .ConfigureAwait(false);
+            Assert.Equal(Karaokay.Domain.DownloadStage.Failed, job.Stage);
+            Assert.Contains(failureDetail, job.FailureReason);
+        }
+        finally
+        {
+            gate.Release.TrySetResult(true);
+            _fixture.YouTube.ForgetFailureGate(FakeYouTubeService.GatedFailVideoId);
+        }
+    }
+
+    [SkippableFact]
     public async Task RangeRequestServesExactlyHundredBytesAndFullRequestServesTheWholeFile()
     {
         RequireDocker();
@@ -504,6 +578,28 @@ public sealed class YouTubeIntegrationTests :
         }
 
         Assert.Fail($"Timed out waiting for queue item {queueItemId} to reach {expected}.");
+    }
+
+    private static async Task<RoomSnapshot> WaitForPlaybackStatusAsync(
+        HttpClient http,
+        string roomCode,
+        PlaybackStatus expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        RoomSnapshot? snapshot = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            snapshot = await GetSnapshotAsync(http, roomCode).ConfigureAwait(false);
+            if (snapshot.Playback.Status == expected)
+            {
+                return snapshot;
+            }
+
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
+        Assert.Fail($"Timed out waiting for room {roomCode} to reach playback {expected}.");
+        return snapshot!;
     }
 
     private static async Task<RoomSnapshot> GetSnapshotAsync(HttpClient http, string roomCode)

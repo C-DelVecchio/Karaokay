@@ -237,8 +237,39 @@ public sealed class FakeYouTubeService : IYouTubeService
     /// <summary>Video id that always raises <see cref="YouTubeServiceException"/>.</summary>
     public const string FailVideoId = "fakeFail001";
 
+    /// <summary>
+    /// Second failing id, used by the test that parks playback while the download is held. Keeping
+    /// it distinct from <see cref="FailVideoId"/> means each test owns its own job and gate.
+    /// </summary>
+    public const string GatedFailVideoId = "fakeGate001";
+
+    /// <summary>
+    /// Diagnostic suffix attached to the reserved failure. It mirrors the enriched staging/stderr
+    /// text the real <see cref="YtDlpClient"/> includes so the failure path can be asserted
+    /// end-to-end without spawning a process.
+    /// </summary>
+    public static string FailureDetailFor(string videoId) =>
+        $"files present: {videoId}.f137.mp4, {videoId}.f140.m4a. " +
+        "stderr: ERROR: unable to merge formats";
+
     private static readonly byte[] SampleVideoBytes = LoadSampleVideo();
     private int _downloadCalls;
+    private readonly ConcurrentDictionary<string, FailureGate> _failureGates =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Registers a per-video gate so a test can start playback while that download is still in
+    /// flight. The dictionary is keyed by video id, so tests never share a latch.
+    /// </summary>
+    public FailureGate HoldFailureUntilReleased(string videoId)
+    {
+        var gate = new FailureGate();
+        _failureGates[videoId] = gate;
+        return gate;
+    }
+
+    /// <summary>Removes a per-video gate once the owning test has finished.</summary>
+    public void ForgetFailureGate(string videoId) => _failureGates.TryRemove(videoId, out _);
 
     /// <summary>Scripted search results returned to the API.</summary>
     public IReadOnlyList<YouTubeSearchResultDto> SearchResults { get; set; } =
@@ -317,9 +348,17 @@ public sealed class FakeYouTubeService : IYouTubeService
             "partial-download",
             cancellationToken).ConfigureAwait(false);
 
-        if (string.Equals(videoId, FailVideoId, StringComparison.Ordinal))
+        if (string.Equals(videoId, FailVideoId, StringComparison.Ordinal)
+            || string.Equals(videoId, GatedFailVideoId, StringComparison.Ordinal))
         {
-            throw new YouTubeServiceException("simulated yt-dlp failure");
+            if (_failureGates.TryGetValue(videoId, out var gate))
+            {
+                gate.Started.TrySetResult(true);
+                await gate.Release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            throw new YouTubeServiceException(
+                "simulated yt-dlp failure: " + FailureDetailFor(videoId));
         }
 
         foreach (var percent in new[] { 25.0, 50.0, 75.0 })
@@ -332,6 +371,21 @@ public sealed class FakeYouTubeService : IYouTubeService
         await File.WriteAllBytesAsync(output, SampleVideoBytes, cancellationToken).ConfigureAwait(false);
         progress?.Report(new DownloadProgressInfo(100, 1_000_000, 0));
         return new YouTubeDownloadResult(output, SampleVideoBytes.Length);
+    }
+
+    /// <summary>
+    /// Per-test latch pair for one held failure download. <see cref="Started"/> fires when the fake
+    /// reaches the download; completing <see cref="Release"/> lets it throw.
+    /// </summary>
+    public sealed class FailureGate
+    {
+        /// <summary>Completed when the fake reaches the held download.</summary>
+        public TaskCompletionSource<bool> Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Complete to let the held download fail.</summary>
+        public TaskCompletionSource<bool> Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private static byte[] LoadSampleVideo() =>

@@ -54,6 +54,47 @@ public sealed class MediaDownloadWorkerTests
     }
 
     [Fact]
+    public void SanitizeFailureReasonRedactsRootsBeforeTruncating()
+    {
+        var root = Path.GetPathRoot(Path.GetTempPath()) ?? Path.DirectorySeparatorChar.ToString();
+        var stagingRoot = Path.Combine(root, "kp-staging-root");
+        var cacheRoot = Path.Combine(root, "kp-cache-root");
+
+        // (a) Staging paths become <staging>.
+        var stagingReason = $"failed to promote {Path.Combine(stagingRoot, VideoId)}";
+        var sanitizedStaging = MediaDownloadWorker.SanitizeFailureReason(
+            stagingReason,
+            stagingRoot,
+            cacheRoot);
+        Assert.Contains("<staging>", sanitizedStaging);
+        Assert.DoesNotContain(stagingRoot, sanitizedStaging);
+
+        // (b) Cache paths become <cache>.
+        var cacheReason = $"failed to write {Path.Combine(cacheRoot, VideoId + ".mp4")}";
+        var sanitizedCache = MediaDownloadWorker.SanitizeFailureReason(
+            cacheReason,
+            stagingRoot,
+            cacheRoot);
+        Assert.Contains("<cache>", sanitizedCache);
+        Assert.DoesNotContain(cacheRoot, sanitizedCache);
+
+        // (c) Roots must be replaced before the 1024-character cap. A truncate-first implementation
+        // would leave the beginning of the staging root (kp-st...) inside the persisted reason.
+        var prefix = new string('a', 1010);
+        var longReason = prefix + stagingRoot + "/" + VideoId + ".mp4" + new string('z', 200);
+        var truncated = MediaDownloadWorker.SanitizeFailureReason(longReason, stagingRoot, cacheRoot);
+        Assert.Equal(1024, truncated.Length);
+        Assert.Contains("<staging>", truncated);
+        Assert.DoesNotContain("kp-st", truncated);
+
+        // (d) A reason with no paths is untouched.
+        const string shortReason = "yt-dlp exited with code 1";
+        Assert.Equal(
+            shortReason,
+            MediaDownloadWorker.SanitizeFailureReason(shortReason, stagingRoot, cacheRoot));
+    }
+
+    [Fact]
     public async Task HappyPathMovesTheFileAndBroadcastsProgressAndSongReady()
     {
         await using var harness = new WorkerHarness();
@@ -127,6 +168,12 @@ public sealed class MediaDownloadWorkerTests
             Assert.Equal(3, harness.YouTube.Attempts);
             Assert.NotNull(job.CompletedAtUtc);
             Assert.Contains("simulated yt-dlp failure", job.FailureReason);
+            Assert.Contains("simulated yt-dlp failure", outcome.FailureReason);
+
+            // The persisted/broadcast reason must not reveal the server's staging root.
+            var stagingRoot = Path.Combine(harness.Root, ".staging");
+            Assert.DoesNotContain(stagingRoot, job.FailureReason);
+            Assert.Contains("<staging>", job.FailureReason);
 
             Assert.False(File.Exists(Path.Combine(harness.Root, "ytcache", VideoId + ".mp4")));
             Assert.Empty(harness.StagingDirectories());
@@ -135,6 +182,8 @@ public sealed class MediaDownloadWorkerTests
                 harness.Hub.Client.DownloadFailedEvents,
                 dto => dto.QueueItemId == queueItem.Id);
             Assert.Contains("simulated yt-dlp failure", failed.Reason);
+            Assert.DoesNotContain(stagingRoot, failed.Reason);
+            Assert.Contains("<staging>", failed.Reason);
             Assert.Empty(harness.Hub.Client.SongReadyEvents);
             await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Failed);
         }
@@ -454,7 +503,10 @@ public sealed class MediaDownloadWorkerTests
 
             if (attempt <= FailuresBeforeSuccess)
             {
-                throw new YouTubeServiceException("simulated yt-dlp failure");
+                // Include the staging path so the test proves the worker redacts it before the
+                // reason reaches the database and the room broadcast.
+                throw new YouTubeServiceException(
+                    $"simulated yt-dlp failure: could not promote {stagingDirectory}");
             }
 
             var output = Path.Combine(stagingDirectory, videoId + ".mp4");

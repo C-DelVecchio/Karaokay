@@ -47,10 +47,16 @@ internal static class YtDlpCommandBuilder
     /// cannot silently produce a non-H.264 MP4; the existing MP4/best fallbacks keep the demo
     /// working when YouTube has no AVC1 rendition.
     /// </summary>
+    /// <param name="resolveOnPath">
+    /// Optional executable lookup used to turn a bare <see cref="YtDlpOptions.FfmpegLocation"/>
+    /// value into an absolute path. Tests inject a deterministic lookup; production uses the
+    /// process <c>PATH</c> through <see cref="ExecutableLocator"/>.
+    /// </param>
     public static List<string> BuildDownloadArguments(
         string videoId,
         string stagingDirectory,
-        YtDlpOptions options)
+        YtDlpOptions options,
+        Func<string, string?>? resolveOnPath = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (!VideoIdValidator.IsValid(videoId))
@@ -82,10 +88,16 @@ internal static class YtDlpCommandBuilder
             outputTemplate,
         };
 
-        if (!string.IsNullOrWhiteSpace(options.FfmpegLocation))
+        // yt-dlp does not resolve a bare name through PATH for --ffmpeg-location, so "ffmpeg"
+        // would be treated as a missing file and the merge would be skipped. Pass an absolute
+        // path when the name is on PATH; otherwise omit the flag and let yt-dlp look it up.
+        var ffmpegLocation = ExecutableLocator.ResolveFfmpegLocation(
+            options.FfmpegLocation,
+            resolveOnPath);
+        if (ffmpegLocation is not null)
         {
             arguments.Add("--ffmpeg-location");
-            arguments.Add(options.FfmpegLocation.Trim());
+            arguments.Add(ffmpegLocation);
         }
 
         AddJsRuntimeArguments(arguments, options);

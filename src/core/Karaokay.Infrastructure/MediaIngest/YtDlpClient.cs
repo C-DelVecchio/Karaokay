@@ -19,6 +19,8 @@ public sealed partial class YtDlpClient : IYouTubeService
 {
     private const int MinSearchResults = 1;
     private const int MaxSearchResults = 25;
+    private const int MaxTailLength = 600;
+    private const int MaxListedFiles = 12;
 
     private readonly YtDlpOptions _options;
     private readonly ILogger<YtDlpClient> _logger;
@@ -103,8 +105,7 @@ public sealed partial class YtDlpClient : IYouTubeService
         var file = FindDownloadedFile(stagingDirectory, videoId);
         if (file is null)
         {
-            throw new YouTubeServiceException(
-                $"yt-dlp completed for '{videoId}' but produced no media file in the staging directory.");
+            throw NoMediaFileException(videoId, stagingDirectory, output);
         }
 
         var size = new FileInfo(file).Length;
@@ -185,11 +186,89 @@ public sealed partial class YtDlpClient : IYouTubeService
                ?? candidates.OrderByDescending(path => new FileInfo(path).Length).First();
     }
 
+    /// <summary>
+    /// Builds the failure raised when yt-dlp exits successfully but leaves nothing the worker can
+    /// promote. yt-dlp's diagnostics are the only clue available before the worker deletes the
+    /// staging directory, so both the stderr/stdout tails and the actual staged filenames are
+    /// included (bounded) in the exception message that is logged and persisted.
+    /// </summary>
+    private static YouTubeServiceException NoMediaFileException(
+        string videoId,
+        string stagingDirectory,
+        ProcessOutput output)
+    {
+        var files = ListStagedFiles(stagingDirectory);
+        var listing = DescribeFiles(files);
+        var stderr = DescribeTail(output.StandardError);
+        var stdout = DescribeTail(output.StandardOutput);
+
+        if (files.Length > 0
+            && files.All(name => name.EndsWith(".part", StringComparison.OrdinalIgnoreCase)))
+        {
+            return new YouTubeServiceException(
+                $"yt-dlp completed for '{videoId}' but left only partial .part files in the staging " +
+                $"directory. Files present: {listing}. stderr: {stderr} stdout: {stdout}");
+        }
+
+        // Separate video/audio fragments mean yt-dlp could not run the merge step. Without FFmpeg
+        // it exits 0 after downloading fNNN files, which a plain "no media file" message hides.
+        var fragmentNote = files.Any(name => IsFragmentFile(videoId, name))
+            ? " Fragment files were left behind, so yt-dlp could not merge video and audio; check " +
+              "that FFmpeg is available."
+            : string.Empty;
+
+        // Keep the diagnostic classification ahead of the raw tails: the worker persists only the
+        // first 1024 characters, and host/format fragments matter more than the end of stderr.
+        return new YouTubeServiceException(
+            $"yt-dlp completed for '{videoId}' but produced no media file in the staging " +
+            $"directory.{fragmentNote} Files present: {listing}. stderr: {stderr} stdout: {stdout}");
+    }
+
+    private static string[] ListStagedFiles(string directory)
+    {
+        try
+        {
+            return Directory
+                .EnumerateFiles(directory)
+                .Select(path => Path.GetFileName(path))
+                .OfType<string>()
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    private static string DescribeFiles(string[] files)
+    {
+        if (files.Length == 0)
+        {
+            return "(none)";
+        }
+
+        var listing = string.Join(", ", files.Take(MaxListedFiles));
+        if (files.Length > MaxListedFiles)
+        {
+            listing = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{listing}, ... (+{files.Length - MaxListedFiles} more)");
+        }
+
+        return Tail(listing);
+    }
+
+    private static bool IsFragmentFile(string videoId, string fileName) =>
+        fileName.StartsWith(videoId + ".f", StringComparison.Ordinal);
+
+    private static string DescribeTail(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "(empty)" : Tail(value);
+
     private static string Tail(string value)
     {
         var trimmed = value.Trim();
-        const int maxLength = 600;
-        return trimmed.Length <= maxLength ? trimmed : trimmed[^maxLength..];
+        return trimmed.Length <= MaxTailLength ? trimmed : trimmed[^MaxTailLength..];
     }
 
     private sealed record ProcessOutput(string StandardOutput, string StandardError);
