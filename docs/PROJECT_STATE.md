@@ -19,6 +19,8 @@ This is a guided tour of **what Karaokay is, what exists today, how the pieces f
 - **Slice 2 learning snapshot:**
   [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md)
 - **Slice 3 deep guide:** [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md)
+- **Slice 4 deep guide:** [`docs/learning/slice-4-walkthrough.md`](learning/slice-4-walkthrough.md)
+- **Slice 5 deep guide:** [`docs/learning/slice-5-walkthrough.md`](learning/slice-5-walkthrough.md)
 - **Reviews:** [`slice-1`](review/slice-1-review.md) · [`slice-2`](review/slice-2-review.md) · [`slice-3`](review/slice-3-review.md) · [`slice-4`](review/slice-4-review.md)
 
 ---
@@ -167,7 +169,7 @@ What landed:
   entry point. A filtered unique index on `Song.VideoId` deduplicates songs, and a cache hit by
   `videoId` short-circuits the download and returns `Ready`.
 - **Download worker.** A bounded `Channel<DownloadJob>` (capacity 4, `BoundedChannelFullMode.Wait`)
-  feeds `MediaDownloadWorker`, which moves jobs through `Queued → Downloading → Processing →
+  feeds `MediaDownloadWorker`, which moves jobs through `Queued → Resolving → Downloading →
   Transcoding → Completed/Failed`, coalesces single-flight downloads per `videoId`, retries twice
   with backoff, writes into a staging directory, and atomically moves the result under the trusted
   cache root. Progress is broadcast as `DownloadProgressChanged`; `SongReady`/`DownloadFailed`
@@ -195,7 +197,8 @@ unsynchronized wall-clock video sync (Ping/Pong offset filter), bounded-channel 
 request paths, unauthenticated/unthrottled `yt-dlp` spawning, strict H.264/AAC enforcement,
 machine-specific development paths, the CI requires-Docker gate, and DTO field-parity contract
 tests. The verdict and open backlog are in
-[`docs/review/slice-4-review.md`](review/slice-4-review.md).
+[`docs/review/slice-4-review.md`](review/slice-4-review.md). The deep walkthrough is
+[`docs/learning/slice-5-walkthrough.md`](learning/slice-5-walkthrough.md).
 
 ### 2.5 Slice 4 — playback authority, clock sync, authoritative stage playback
 
@@ -288,7 +291,8 @@ Slice 4 answered: *who is allowed to move playback, and how does every screen co
 
 The implementation choices and the two blueprint filename corrections are recorded in
 [ADR-008](adr/008-slice-4-playback-authority-decisions.md); the completion follow-up is in the
-[Slice 4 review](review/slice-4-review.md).
+[Slice 4 review](review/slice-4-review.md). The deep walkthrough is
+[`docs/learning/slice-4-walkthrough.md`](learning/slice-4-walkthrough.md).
 
 ### 2.6 What is NOT built yet
 
@@ -331,7 +335,9 @@ karaokay/
 │   ├── learning/
 │   │   ├── slice-1-walkthrough.md
 │   │   ├── slice-2-walkthrough.md
-│   │   └── slice-3-walkthrough.md
+│   │   ├── slice-3-walkthrough.md
+│   │   ├── slice-4-walkthrough.md
+│   │   └── slice-5-walkthrough.md
 │   └── review/{slice-1,slice-2,slice-3,slice-4}-review.md
 └── src/
     ├── apps/  core/  tools/  clients/web/  tests/
@@ -397,6 +403,8 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 - **`learning/slice-1-walkthrough.md`** — a long beginner guide to Slice 1: MIDI, tick math, lyric encoding, FFmpeg mixing, LUFS, and the tests.
 - **`learning/slice-2-walkthrough.md`** — the preserved "Project State After Slice 2" snapshot (commit `ebc3e95`), kept as a learning walkthrough with links fixed for its new home.
 - **`learning/slice-3-walkthrough.md`** — the deep Slice 3 guide: SignalR hubs and groups, the room registry and queue engine, EF Core persistence, the M1 reorder bug, the phone remote, and the review backlog.
+- **`learning/slice-4-walkthrough.md`** — the deep Slice 4 guide: the single-writer `PlaybackAuthority`, the count-in and duration watchdog, Ping/Pong clock sync, authoritative stage playback, and cold-start rehydration.
+- **`learning/slice-5-walkthrough.md`** — the deep Slice 5 guide: zero-key `yt-dlp` search, the bounded download worker and cache, the guest `YouTubeTab`, and the stage `<video>` surface.
 - **`review/slice-1-review.md`**, **`review/slice-2-review.md`**, **`review/slice-3-review.md`**,
   **`review/slice-4-review.md`** — internal reviews with verdicts, fixed defects, and carry-forward
   backlogs. The Slice 3 record fixes M1 and schedules M2–M5 (M4/M5 since closed by Slice 4); the
@@ -587,9 +595,10 @@ Why one serializer? The generator, importer, golden tests, and `verify` all comp
 
 The persistence entities and enums: `Song`, `PartyRoom`, `QueueItem`, `DownloadJob`, plus
 `MediaSource`, `QueueItemState`, `PlaybackStatus`, and `DownloadStage`. The wire mirrors live in
-Contracts because Contracts cannot reference Domain. A parity test covers enum names/values, and
-DTO field-shape parity now exists: `SignalRContractTests` asserts each mirrored record's field count
-and camelCase name set. Name-only parity remains for field types and optionality.
+Contracts because Contracts cannot reference Domain. `SignalRContractTests` checks the hub method
+names, the `RoomCommand`/`HubErrorCodes` constants, and each mirrored DTO's field count and camelCase
+name set; enum names/values are not compared yet (slice-3 review minor #14), so renumbering one copy
+is still a silent wire break. Name-only parity remains for field types and optionality.
 
 #### `Karaokay.Application`
 
@@ -771,7 +780,7 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 
 ### 4.5 `src/tests/` — the safety net
 
-- **`Karaokay.UnitTests` (196 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, the count-in interactions, `AwaitingDownload` auto-start, cold-restart count-in resume, and the command-channel write timeout; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, the countdown reset on removal, and Start/Pause/Resume/Skip/Idle transitions.
+- **`Karaokay.UnitTests` (197 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, the count-in interactions, `AwaitingDownload` auto-start, cold-restart count-in resume, and the command-channel write timeout; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, the countdown reset on removal, and Start/Pause/Resume/Skip/Idle transitions.
 - **`Karaokay.IntegrationTests` (31 passing; 28 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, stage-role rejection, and five Slice 4 tests (two-phase Start broadcast and tick contract, ±30 ms pause/resume, watchdog, duplicate-end, cold-restart rehydration). The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
 - **`Karaokay.ArchitectureTests` (11 tests).** These enforce layering. **Reflection** is .NET's ability to inspect assemblies and types at runtime. The tests use `Assembly.GetReferencedAssemblies()` to assert, for example, that `Contracts` never references Domain/Application/Infrastructure/DryWetMidi/CliWrap/EF Core, that `Application` never references `Infrastructure`, that CLI tools never reference the apps, and that `Domain` is a leaf. **Positive controls** assert the probe really sees a known reference, so a broken helper cannot make every rule pass vacuously. The source comment explains why reflection replaced `NetArchTest.Rules`, which misreported dependencies on .NET 10.
 
@@ -1189,6 +1198,8 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 - [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md) — the deep beginner guide to MIDI, tempo maps, phrase markers, FFmpeg, LUFS, and the tests.
 - [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md) — the preserved post-Slice-2 project tour, now a learning snapshot with relocated links.
 - [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md) — the deep Slice 3 guide: rooms, the queue engine, EF Core, the M1 story, and the phone remote.
+- [`docs/learning/slice-4-walkthrough.md`](learning/slice-4-walkthrough.md) — the deep Slice 4 guide: the playback authority, count-in and watchdog, clock sync, authoritative stage playback, and rehydration.
+- [`docs/learning/slice-5-walkthrough.md`](learning/slice-5-walkthrough.md) — the deep Slice 5 guide: zero-key yt-dlp search, the download worker and cache, the guest YouTube tab, and the stage video surface.
 - [`docs/review/slice-1-review.md`](review/slice-1-review.md) — how Slice 1 was reviewed and fixed.
 - [`docs/review/slice-2-review.md`](review/slice-2-review.md) — the browser-stage review and its nit backlog.
 - [`docs/review/slice-3-review.md`](review/slice-3-review.md) — the rooms/queue/remote review, the M1 fix, and the M2–M5 schedule.
