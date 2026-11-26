@@ -1078,6 +1078,15 @@ These are scheduled, not optional polish:
 - **ADR-005 governance gap.** No Slice 3 ADR was written, and §4.3/§5.2 still disagree on whether
   `JoinRequest` carries a session token. Settle the token/reconnect contract (and record the
   Slice 3 decisions) before building identity-dependent features.
+- **M6 — Postgres dev password is a committed literal.** `src/apps/Karaokay.AppHost/Program.cs`
+  pins `postgres-password` to a hardcoded dev value so the persisted `karaokay-postgres-data`
+  volume's credentials survive restarts (without this, AddPostgres regenerates a random password
+  each run and the api's startup migrations fail auth — the "api Finished in Aspire" bug).
+  Fine for localhost-only self-host dev; before Postgres is ever exposed beyond localhost
+  (notably the Slice 6 Azure deploy), switch to a user-secrets-backed parameter instead
+  (plain `AddParameter(name, secret: true)` with no literal value, value supplied via
+  `dotnet user-secrets set` in the AppHost) and reinitialize the data volume with the new
+  credentials.
 
 ### Slice 5 — zero-key YouTube search and `yt-dlp` downloads (completed early)
 
