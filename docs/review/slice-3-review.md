@@ -81,9 +81,9 @@ without Docker). Vitest covers the UI gating helper.
 
 | # | Finding | Owner / timing | Suggested direction |
 |---:|---|---|---|
-| M2 | **Stage role is client-self-declared.** `JoinRequest.Role` is trusted by `StageHub.RequireStageAsync`; any guest who knows the code can join as `"stage"` and invoke `ReportSongEnded`/`UpdateStageCapabilities`. | Fix before the Slice 6 public demo. | Bind the stage to a server-issued secret (room-creation response or one-time stage claim) or enforce one stage per room; record the choice as an ADR. |
-| M3 | **Unbounded room creation.** Every `/stage` page load creates a room; there is no GC, close path, rate limit, or cap, and the finite 279,841-code space is consumed permanently. | Schedule with room-GC work (blueprint placed GC in Slice 8); must land before Slice 6. | Add idle expiry/close + registry sweep, a per-source creation rate limit, and a documented capacity alarm. |
-| M4 | **Write-only persistence.** Rooms/queue are written to Postgres but never rehydrated on a cold restart, contradicting ADR-001's intent that the DB is the cold-restart fallback. | Assign explicitly to Slice 4's `PlaybackAuthority` or schedule before Slice 6. | Load rooms on startup (or lazily on first join) and rebuild `RoomState`, including sequence numbers and playback anchors. |
+| M2 | **Stage role is client-self-declared.** `JoinRequest.Role` is trusted by `StageHub.RequireStageAsync`; any guest who knows the code can join as `"stage"` and invoke `ReportSongEnded`/`UpdateStageCapabilities`. | Fix before the Slice 6a public demo. | Bind the stage to a server-issued secret (room-creation response or one-time stage claim) or enforce one stage per room; record the choice as an ADR. |
+| M3 | **Unbounded room creation.** Every `/stage` page load creates a room; there is no GC, close path, rate limit, or cap, and the finite 279,841-code space is consumed permanently. | Schedule with room-GC work (blueprint placed GC in Slice 8); must land before Slice 6a. | Add idle expiry/close + registry sweep, a per-source creation rate limit, and a documented capacity alarm. |
+| M4 | **Write-only persistence.** Rooms/queue are written to Postgres but never rehydrated on a cold restart, contradicting ADR-001's intent that the DB is the cold-restart fallback. | Assign explicitly to Slice 4's `PlaybackAuthority` or schedule before Slice 6a. | Load rooms on startup (or lazily on first join) and rebuild `RoomState`, including sequence numbers and playback anchors. |
 | M5 | **Phone playback controls mutate room playback the stage never renders.** The stage still plays its local `DemoTrackPicker`; pressing Start/Pause/Skip on a phone changes `RoomState` but not stage audio. | Hide controls behind a flag or wire the minimum stage playback path in Slice 4. | Slice 4's authority/controller is the natural owner; until then, label or disable the controls to avoid a demo that appears broken. |
 
 ## d) Minor backlog
@@ -145,7 +145,7 @@ implementation now follows it.
 
 ## g) Carry-forward
 
-M2 and M3 must close before the Slice 6 public demo; M4 belongs with Slice 4's `PlaybackAuthority`
+M2 and M3 must close before the Slice 6a public demo; M4 belongs with Slice 4's `PlaybackAuthority`
 unless scheduled earlier; M5 is natural Slice 4 scope. The minor backlog should be folded into
 Slice 4 planning rather than rediscovered, and the ADR/session-token question should be settled
 before any identity-dependent feature is built on reconnect.

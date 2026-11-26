@@ -1573,7 +1573,8 @@ useful architectural property — the YouTube path is not a second app. It is th
 the same queue rows, the same SignalR group, and the same stage; only the ingestion and the rendering
 surface differ.
 
-The next slice is **Slice 6: Azure free-tier deployment and CI/CD**. It has to solve the problems
+The next slices are **Slice 6a: Azure free-tier deployment and CI/CD** and **Slice 6b: the
+self-hosted Proxmox LXC/systemd deployment**. Slice 6a has to solve the problems
 this slice deliberately leaves to the operator: disable ingestion in the cloud, keep media out of the
 image, make the container start without a warm database, and keep the Docker-gated integration suite
 honest. The open review backlog — the unbounded progress channel, the incomplete ticket on shutdown,

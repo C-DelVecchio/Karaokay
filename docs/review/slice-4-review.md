@@ -130,7 +130,7 @@ partially landed.
 - Cached files bypass the codec assertion (`MediaDownloadWorker.cs:105-116`), so a VP9 cache entry
   written before format enforcement remains servable; consider re-probing or invalidating the cache.
 - The rate limiter's partition dictionary grows per distinct IP with no eviction
-  (`YouTubeRateLimiting.cs:72-80`); acceptable now, but note it for the Slice 6 public demo.
+  (`YouTubeRateLimiting.cs:72-80`); acceptable now, but note it for the Slice 6a public demo.
 
 ## f) Verification blind spots
 
@@ -201,7 +201,7 @@ change**, and these backend fixes plus that alignment fix are what make the lane
 
 **Still open (not claimed by this follow-up).**
 
-- Slice 3 review **M2** — the stage role is client-declared; needs an ADR before the Slice 6 public
+- Slice 3 review **M2** — the stage role is client-declared; needs an ADR before the Slice 6a public
   demo.
 - Slice 3 review **M3** — rooms are never garbage-collected.
 - The `clockSync.ts:239-241` nit from §e. Checked on the current tree: `tick()` still returns when

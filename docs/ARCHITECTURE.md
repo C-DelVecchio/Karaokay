@@ -1,6 +1,6 @@
 # Karaokay — Architectural Blueprint & Phased Implementation Plan
 
-> **Status:** Accepted · **Version:** 1.2 · **Date:** 2026-11-24
+> **Status:** Accepted · **Version:** 1.3 · **Date:** 2026-11-26
 >
 > Karaokay is a self-hosted, multi-client, real-time party karaoke platform inspired by classic
 > karaoke machines, Rock Band, and Jackbox Games. It is engineered as a GitHub portfolio showcase
@@ -16,6 +16,8 @@
 > `ReportSongEnded` idempotency + hub role gating; provider-specific filtered-index syntax;
 > project renamed to **Karaokay**. 1.2 — Slice 1 reconciliation: room-code alphabet corrected to
 > 23 letters / 279,841 codes (ADR-005); line-wrapping ownership moved to the renderer (ADR-006).
+> 1.3 — Slice 6 split into 6a (Azure zero-cost demo) and 6b (self-hosted Proxmox LXC, systemd,
+> Nginx Proxy Manager), with the self-host deployment topology recorded in ADR-009.
 >
 > Companion decision records: [ADR-001](adr/001-single-replica-signalr-azure.md) ·
 > [ADR-002](adr/002-android-oboe-hdmi-usb-drift.md) ·
@@ -24,7 +26,8 @@
 > [ADR-005](adr/005-slice-1-blueprint-reconciliations.md) ·
 > [ADR-006](adr/006-line-wrapping-ownership.md) ·
 > [ADR-007](adr/007-slice-4-5-deliverable-ordering.md) ·
-> [ADR-008](adr/008-slice-4-playback-authority-decisions.md)
+> [ADR-008](adr/008-slice-4-playback-authority-decisions.md) ·
+> [ADR-009](adr/009-self-hosted-lxc-behind-reverse-proxy.md)
 
 ## Table of Contents
 
@@ -59,9 +62,9 @@ A real-time party karaoke platform:
 
 | # | Constraint | Enforcement |
 |---|---|---|
-| C1 | **$0/month, permanently.** Every tool, library, CI runner, and cloud hosting target must operate at $0/month. No expiring 12-month free trials, no paid API keys, no paid Redis backplanes. | Azure SWA Free, ACA Consumption (`minReplicas: 0`), Azure SQL Free tier, GitHub free runners, zero-key `yt-dlp` search. Documented SKU table in `docs/self-hosting.md`. |
+| C1 | **$0/month, permanently.** Every tool, library, CI runner, and cloud hosting target must operate at $0/month. No expiring 12-month free trials, no paid API keys, no paid Redis backplanes. | Azure SWA Free, ACA Consumption (`minReplicas: 0`), Azure SQL Free tier, GitHub free runners, zero-key `yt-dlp` search; self-host runs on the operator's own Proxmox hardware with free DuckDNS + Let's Encrypt. Cost/SKU tables in `docs/self-hosting.md` (self-host + Azure cross-check). |
 | C2 | **Zero copyrighted assets in Git.** Never commit commercial Rock Band charts, audio stems, or downloaded YouTube videos. | Standalone `Karaokay.Importer` CLI processes users' own extracted folders locally; deterministic `Karaokay.SyntheticGen` tool generates 2–3 public-domain multitrack demo songs committed to the repo so CI and recruiters run the full stack out of the box. |
-| C3 | **Two deployment modes from one codebase.** *Self-hosted* (Linux home server, Aspire/Docker Compose, PostgreSQL, full `yt-dlp` ingestion) and *Public portfolio demo* (Azure free tiers, Azure SQL, ingestion disabled via feature flag, demo songs bundled as static frontend assets). | `Features:EnableYouTubeIngestion` flag + provider-agnostic persistence (Npgsql / Microsoft.EntityFrameworkCore.SqlServer). |
+| C3 | **Two deployment modes from one codebase.** *Self-hosted* (unprivileged Proxmox Debian LXC, bare-metal systemd + Kestrel serving the built SPA, PostgreSQL, full `yt-dlp` ingestion, Nginx Proxy Manager TLS; Aspire is dev-time orchestration and the Docker Compose image specced for Slice 5 (not yet implemented) is the secondary path) and *Public portfolio demo* (Azure free tiers, Azure SQL, ingestion disabled via feature flag, demo songs bundled as static frontend assets). | `Features:EnableYouTubeIngestion` flag + provider-agnostic persistence (Npgsql / Microsoft.EntityFrameworkCore.SqlServer). |
 | C4 | **Type safety across the wire.** OpenAPI → `openapi-typescript` generated clients; SignalR method-name parity enforced by unit tests reflecting C# interfaces against TS protocol constants. | CI contract tests (`SignalRContractTests`). |
 
 ---
@@ -91,8 +94,13 @@ A real-time party karaoke platform:
 
 **Deployment topologies (one codebase):**
 
-1. **Self-Hosted Mode** — .NET Aspire orchestrates the API + PostgreSQL with local persistent media
-   storage and full YouTube search/download (`yt-dlp`, FFmpeg, Deno 2.3+ in the image).
+1. **Self-Hosted Mode** — one unprivileged Debian 12/13 LXC on Proxmox VE runs the API as a
+   bare-metal `systemd` service. Kestrel serves the built SPA from `wwwroot`, the REST API, and
+   SignalR from a single origin; PostgreSQL listens on loopback; an existing Nginx Proxy Manager
+   LXC terminates TLS for `https://karaokay.delvserv.duckdns.org` (free DuckDNS + Let's Encrypt)
+   and proxies WebSockets. Full YouTube search/download (`yt-dlp`, FFmpeg, Deno 2.3+) is enabled.
+   .NET Aspire remains dev-time orchestration, and the Docker Compose image specced for Slice 5
+   (not yet implemented) is the secondary home-server path. See [ADR-009](adr/009-self-hosted-lxc-behind-reverse-proxy.md).
 2. **Public Portfolio Demo Mode** — Azure Static Web Apps (Free) hosts the web client;
    Azure Container Apps (Consumption, `minReplicas: 0`, `maxReplicas: 1`, HTTP session affinity)
    hosts the API so SignalR works on a single replica without Redis or Azure SignalR Service;
@@ -116,9 +124,13 @@ karaokay/
 │   │   ├── 002-android-oboe-hdmi-usb-drift.md
 │   │   ├── 003-dual-mode-stage-web-vs-native.md
 │   │   ├── 004-dual-source-media-pipeline.md
-│   │   └── template.md
+│   │   ├── 005-slice-1-blueprint-reconciliations.md
+│   │   ├── 006-line-wrapping-ownership.md
+│   │   ├── 007-slice-4-5-deliverable-ordering.md
+│   │   ├── 008-slice-4-playback-authority-decisions.md
+│   │   └── 009-self-hosted-lxc-behind-reverse-proxy.md
 │   ├── data-contracts.md               # lyrics.json + SignalR reference for contributors
-│   └── self-hosting.md                 # home-server setup guide + Azure SKU cost table
+│   └── self-hosting.md                 # self-hosted LXC guide + $0 cost table + Azure SKU cross-check
 │
 ├── src/
 │   ├── apps/
@@ -126,8 +138,8 @@ karaokay/
 │   │   │   ├── Hubs/StageHub.cs  Hubs/StageHubContracts.cs
 │   │   │   ├── Endpoints/ (SongsEndpoints.cs, RoomsEndpoints.cs, MediaEndpoints.cs)
 │   │   │   ├── Features/ (RoomService, QueueService, PlaybackAuthority, RoomCodeGenerator)
-│   │   │   └── Program.cs  appsettings.json  appsettings.cloud.json
-│   │   ├── Karaokay.AppHost/          # .NET Aspire orchestrator (self-host mode)
+│   │   │   └── Program.cs  appsettings.json  appsettings.cloud.json  appsettings.selfhost.json
+│   │   ├── Karaokay.AppHost/          # .NET Aspire orchestrator (dev-time self-host)
 │   │   └── Karaokay.ServiceDefaults/  # shared telemetry/health/resilience config
 │   │
 │   ├── core/
@@ -174,9 +186,13 @@ karaokay/
 ├── infra/
 │   ├── docker/ (server.Dockerfile [aspnet + yt-dlp + ffmpeg + deno], docker-compose.yml
 │   │             with optional cookies.txt volume mount)
-│   ├── aspire/ (self-host wiring)
+│   ├── aspire/ (dev-time self-host wiring)
 │   ├── azure/ (main.bicep, containerapp.tmpl.yaml, swa.config.staticwebapp, deploy scripts)
 │   └── mediastore/ (volume layout doc: /media/{library,ytcache})
+│
+├── scripts/
+│   ├── proxmox/ (create-karaokay-lxc.sh, provision-karaokay.sh, karaokay-api.service)
+│   └── deploy-selfhost.sh            # publish + web build + rsync + migrations + restart
 │
 └── .github/workflows/
     ├── ci.yml            # build + test matrix (ubuntu, free runners)
@@ -681,8 +697,10 @@ clock for the renderer), `engine_get_drift_stats()`. `AudioEngineInterop.cs` wra
 
 ## 7. Phased Vertical-Slice Implementation Roadmap
 
-8 slices; each ends in a demoable, tested increment. Slices 1–6 are CI-green on free Ubuntu
-runners throughout.
+Nine entries (slices 1–8, with Slice 6 split into **6a** and **6b**); each ends in a demoable,
+tested increment. **6a** is the Azure zero-cost demo, CI-green on free Ubuntu runners. **6b** is
+the self-hosted Proxmox LXC path, validated by scripted provisioning plus a manual
+phone-off-network acceptance checklist. Slices 1–6a are CI-green on free Ubuntu runners throughout.
 
 | Order | Slice | Unlocks | Biggest risk & built-in mitigation |
 |---|---|---|---|
@@ -691,7 +709,8 @@ runners throughout.
 | 3 | Rooms + phones | the party mechanic | SignalR state races → single-writer authority + sequence numbers |
 | 4 | Sync | correctness under real networks | drift bugs → audio-as-ground-truth + self-correcting nudges |
 | 5 | yt-dlp worker | the wow feature | YouTube flakiness → shimmed-binary integration tests; real yt-dlp only nightly/local |
-| 6 | Azure deploy | the recruiter URL | two-layer cold start (app + DB) → reconnect UX + retry strategy (ADR-001) |
+| 6a | Azure deploy | the recruiter URL | two-layer cold start (app + DB) → reconnect UX + retry strategy (ADR-001) |
+| 6b | Self-hosted LXC | the real home-server install | reverse-proxy host/proto leakage → ForwardedHeaders + PublicBaseUrl precedence tests |
 | 7 | Oboe engine | the C++ showpiece | device quirks → fake-Oboe/MediaCodec CI harness + telemetry to prove behavior |
 | 8 | TV stage + hardening | flagship demo | two-renderer divergence → shared golden fixtures |
 
@@ -926,7 +945,7 @@ Each slice below specifies files to create, required tests, and a copy-paste
 
 ---
 
-### Slice 6 — Azure zero-cost deployment, cloud isolation & CI/CD
+### Slice 6a — Azure zero-cost deployment, cloud isolation & CI/CD
 
 **Files**
 
@@ -938,7 +957,7 @@ Each slice below specifies files to create, required tests, and a copy-paste
   window (transient errors `40613`/`40197`)**, SqlServer migration set, web client
   **"Waking database…"** state alongside the "waking the stage…" cold-start state,
   `.github/workflows/deploy-demo.yml` (build → GHCR → bicep deploy → SWA), `web` build step
-  copying `public/demo-tracks`, `docs/self-hosting.md` + README live-demo section + architecture
+  copying `public/demo-tracks`, README live-demo section + architecture
   diagram (`docs/diagram.drawio` → exported PNG).
 
 **Tests**
@@ -953,7 +972,7 @@ Each slice below specifies files to create, required tests, and a copy-paste
 
 **Definition of Done**
 
-> "Implement Slice 6 per docs/ARCHITECTURE.md §7. Definition of Done: (1) one GitHub Actions
+> "Implement Slice 6a per docs/ARCHITECTURE.md §7. Definition of Done: (1) one GitHub Actions
 > workflow deploys the web client to Azure Static Web Apps (free) and the API to a single-replica
 > scale-to-zero Container App with HTTP session affinity, with Azure SQL free tier persistence;
 > (2) the live demo URL in the README boots from idle in <90 s across both cold-start layers
@@ -963,8 +982,119 @@ Each slice below specifies files to create, required tests, and a copy-paste
 > on both Npgsql and SqlServer via the provider-matrix test, including the provider-specific
 > `HasFilter` filtered-index syntax; (5) the EF Core retry strategy absorbs simulated
 > 40613/40197 transients after idle and the web client shows a branded 'Waking database…'
-> state during the wake window; (6) the whole stack costs $0/month verified by documented SKU
-> choices in docs/self-hosting.md."
+> state during the wake window; (6) the whole stack costs $0/month verified by documented
+> Azure SKU choices in `infra/azure/main.bicep` and the README live-demo section (the
+> self-host guide now belongs to Slice 6b)."
+
+---
+
+### Slice 6b — Self-hosted deployment: Proxmox LXC, bare-metal systemd, reverse-proxied public access
+
+**Files**
+
+- `scripts/proxmox/create-karaokay-lxc.sh` (community-helper-script style, run on the Proxmox
+  host): prompts for CTID / hostname / LXC IP + gateway / DNS, downloads the Debian 12/13 template,
+  creates an **unprivileged** LXC, then copies the provisioner (path supplied as an argument) into
+  it with `pct push` and runs it with `pct exec`; safe to re-run against an existing CT.
+- `scripts/proxmox/provision-karaokay.sh` (in-LXC, idempotent): apt installs FFmpeg, PostgreSQL
+  15+, Python, and ufw; adds Microsoft's package repo and installs `aspnetcore-runtime-10.0`;
+  installs Deno 2.3+; creates the `karaokay` system user; creates
+  `/opt/karaokay/{app,media,ytdlp-cache,yt-dlp}`; creates the yt-dlp venv as the `karaokay` user
+  (no `pip` as root) and installs `yt-dlp` into it; writes `/etc/karaokay/karaokay.env` (mode 0640,
+  root:karaokay) with `ASPNETCORE_URLS=http://0.0.0.0:5255`, `ASPNETCORE_ENVIRONMENT=selfhost`,
+  `MediaRoot`, `YtDlp__CacheDirectory`, `ConnectionStrings__Karaokay`, a **generated** Postgres
+  password, `PublicBaseUrl`, and `Cors__AllowedOrigins__*`; creates the `karaokay` database/role;
+  installs and enables `karaokay-api.service`. The generated password is one half of the production
+  fix for carried-forward review item **M6**; the other half is the AppHost change below.
+- `src/apps/Karaokay.AppHost/Program.cs`: replace the hardcoded `postgres-password` literal with a
+  user-secrets-backed parameter (`AddParameter("postgres-password", secret: true)` with no literal
+  value; the dev value comes from `dotnet user-secrets` / Aspire input, while the production LXC
+  path ignores AppHost and reads `ConnectionStrings__Karaokay` from the env file); reinitialize the
+  persisted `karaokay-postgres-data` volume after the change. This is the second half of **M6**.
+- `scripts/proxmox/karaokay-api.service`: installed to `/etc/systemd/system/`; `User=karaokay`,
+  `Group=karaokay`, `WorkingDirectory=/opt/karaokay/app`,
+  `EnvironmentFile=/etc/karaokay/karaokay.env`,
+  `ExecStart=/usr/bin/dotnet /opt/karaokay/app/Karaokay.Api.dll`, `Restart=always`,
+  `RestartSec=5`; hardening `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`,
+  `ProtectHome=true`, `ReadWritePaths=/opt/karaokay/media /opt/karaokay/ytdlp-cache`,
+  `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`,
+  `RestrictSUIDSGID=true`, `LockPersonality=true`; `systemd-analyze verify` clean.
+- Web client production serving: the API enables default/static files over `wwwroot` plus an SPA
+  fallback (`MapFallbackToFile("index.html")`, excluding `/api` and `/hubs`), so one NPM upstream
+  `http://<lxc-ip>:5255` serves `/stage`, `/remote`, `/api`, and `/hubs` same-origin; SignalR
+  WebSockets traverse NPM with websocket support enabled. `scripts/deploy-selfhost.sh`:
+  `dotnet publish` (Release) → `npm ci && npm run build` → rsync the publish output and `dist/`
+  into `/opt/karaokay/app` and `/opt/karaokay/app/wwwroot` → apply EF migrations →
+  `systemctl restart karaokay-api`.
+- `src/apps/Karaokay.Api/appsettings.selfhost.json` (loaded because
+  `ASPNETCORE_ENVIRONMENT=selfhost`; the env file remains the source of secrets and pins
+  non-secret defaults): Npgsql provider, `Features:EnableYouTubeIngestion=true`,
+  `PublicBaseUrl=https://karaokay.delvserv.duckdns.org`, `Cors:AllowedOrigins` including that
+  https origin, `MediaRoot=/opt/karaokay/media/library`,
+  `YtDlp:CacheDirectory=/opt/karaokay/ytdlp-cache`, and `YtDlp:ExecutablePath` pointing at the
+  provisioned venv shim.
+- API code: `UseForwardedHeaders` in `src/apps/Karaokay.Api/Program.cs` — call
+  `ClearForwardedHeaders()` first, apply `XForwardedFor | XForwardedProto | XForwardedHost`, and
+  limit `ForwardedHeadersOptions.KnownProxies` to the NPM LXC IP (configured via
+  `ForwardedHeaders:KnownProxies:0`, never `KnownNetworks = 0.0.0.0/0`), so `Request.Scheme` /
+  `Host` / remote IP are the public ones behind NPM; CORS stays the existing env-configurable
+  `Cors:AllowedOrigins` allow-list.
+- `src/tests/Karaokay.IntegrationTests/QrJoinUrlTests.cs`: add a middleware-level case
+  (`WebApplicationFactory`/`TestClient` sends `X-Forwarded-Host:
+  karaokay.delvserv.duckdns.org`, `X-Forwarded-Proto: https`) asserting the generated QR join URL
+  is `https://karaokay.delvserv.duckdns.org/remote?code=...`, and that a non-empty `PublicBaseUrl`
+  still wins when both are present.
+- `src/clients/web/e2e/selfhost-production.spec.ts`: Playwright smoke against the API serving a
+  production `wwwroot` bundle (no Vite dev proxy) with `PublicBaseUrl` set.
+- `docs/self-hosting.md`: the full operator guide (architecture diagram, LXC creation, NPM proxy
+  host + Let's Encrypt/DuckDNS, configuration, update/backup/troubleshooting, $0 cost table,
+  secondary Docker Compose path, and developer LAN-testing notes).
+- Firewall: ufw in the LXC allows `5255/tcp` **only** from the NPM LXC; an optional Proxmox-host
+  rule for local health checks is documented as optional everywhere. PostgreSQL binds
+  `127.0.0.1:5432` only; optionally enforce the same rule at the Proxmox firewall level. No
+  inbound SSH is exposed through NPM.
+
+**Tests**
+
+- Integration: forwarded-headers join-URL case as above (`X-Forwarded-Host` / `X-Forwarded-Proto`
+  → public https URL), plus the existing `PublicBaseUrl` precedence assertions; a CORS preflight
+  from the public origin succeeds and from a foreign origin fails.
+- AppHost config/integration: assert the Postgres password parameter has no committed literal and
+  is sourced from user secrets/Aspire input, and that the API still starts and migrates against
+  PostgreSQL with the supplied value after the data volume is reinitialized.
+- Playwright: load `/stage` from the locally served production bundle, create a room, decode the
+  QR and assert it encodes the configured absolute `https://…/remote?code=...` URL, then join
+  `/remote?code=...` from a second browser context and queue a demo song.
+- Static checks: `shellcheck` clean on both Proxmox scripts and `deploy-selfhost.sh`;
+  `systemd-analyze verify karaokay-api.service` clean; re-running `provision-karaokay.sh` is
+  idempotent (no duplicate users/databases/env lines, service still healthy).
+- Manual acceptance checklist (documented in `docs/self-hosting.md`, like Slice 7's on-device
+  checklist): from a clean Proxmox host one command creates the LXC; an NPM proxy host issues a
+  Let's Encrypt DuckDNS certificate and has websockets ON; a phone on the LAN scans the stage QR
+  and joins; a phone **off-network (cellular)** scans the same QR, joins, queues, and sings
+  end-to-end.
+
+**Definition of Done**
+
+> "Implement Slice 6b per docs/ARCHITECTURE.md §7. Definition of Done: (1) `scripts/proxmox/create-karaokay-lxc.sh`
+> and `provision-karaokay.sh` stand up a fully working unprivileged Debian LXC from a clean
+> Proxmox VE host with one command, and re-running the provisioner is idempotent; (2)
+> `karaokay-api.service` is active and hardened (`systemd-analyze verify` clean) as the `karaokay`
+> user, running with `ASPNETCORE_ENVIRONMENT=selfhost` so `appsettings.selfhost.json` is loaded, and
+> serving the built SPA from `wwwroot` with SPA fallback alongside `/api` and `/hubs`; (3)
+> behind the operator's existing Nginx Proxy Manager with a Let's Encrypt DuckDNS certificate and
+> websocket support, the public https URL serves stage, remote, `/api`, and `/hubs`, and a phone
+> entirely outside the local network scans the stage QR and completes the join-sing flow
+> end-to-end; (4) the forwarded-headers integration test and the `PublicBaseUrl` precedence test
+> pass, so the QR always encodes the public URL; (5) PostgreSQL uses a generated password stored
+> only in `/etc/karaokay/karaokay.env`, listens on loopback, **and** the AppHost
+> `postgres-password` literal is replaced by a user-secrets-backed parameter with the dev data
+> volume reinitialized — together closing carried-forward review item M6; (6) the firewall allows
+> `5255/tcp` only from the NPM LXC (with an optional Proxmox-host rule for local health checks
+> documented as optional) and blocks direct database access; (7) `docs/self-hosting.md` documents
+> the complete guide — LXC creation, NPM proxy-host
+> configuration, configuration, update procedure, `pg_dump` + media-directory backups,
+> troubleshooting, the secondary Docker Compose alternative, and a cost table proving $0/month."
 
 ---
 

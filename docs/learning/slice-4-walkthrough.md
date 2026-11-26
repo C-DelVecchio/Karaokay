@@ -1675,7 +1675,7 @@ clocks agree.
 
 - **M2** — the stage role is self-declared in `JoinRequest`. Any guest with the code can join as
   `"stage"` and call `ReportSongEnded`. Slice 4 added no authentication; this needs a join-contract
-  change and an ADR before the Slice 6 public demo.
+  change and an ADR before the Slice 6a public demo.
 - **M3** — rooms are never closed or garbage-collected. Every `/stage` load consumes a code from the
   279,841-code space. Cold-start rehydration exists now, but room lifecycle does not.
 
@@ -1700,9 +1700,10 @@ What is left is not playback correctness. It is:
 
 - **M2** — authenticate the stage role before a public demo.
 - **M3** — collect idle rooms and bound room creation.
-- **Slice 6** — Azure free-tier deployment and CI/CD, including the two-layer cold start the
+- **Slice 6a** — Azure free-tier deployment and CI/CD, including the two-layer cold start the
   blueprint describes (app scale-to-zero and database auto-pause). The startup path Slice 4 built —
   migrate, seed, rehydrate, then serve — is exactly what that deployment will exercise.
+- **Slice 6b** — the self-hosted Proxmox LXC/systemd deployment specified in `docs/ARCHITECTURE.md` §7.
 - **Slices 7–8** — the Android Oboe engine and the SkiaSharp TV stage, which reuse the same
   decision-level contract: server wall clock, local audio hardware as media clock.
 

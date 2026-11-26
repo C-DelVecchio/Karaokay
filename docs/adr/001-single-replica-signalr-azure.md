@@ -102,3 +102,7 @@ ingress:
 - `docs/self-hosting.md` includes a SKU table proving every component is a permanently-free tier.
 - Reconnection behavior is integration-tested (snapshot rejoin converges queue + playback state),
   and the SQL retry strategy is integration-tested against simulated `40613`/`40197` transients.
+
+> *Note (2026-11-26): the roadmap's Slice 6 was later split into 6a (Azure, the topology this ADR
+> describes) and 6b (self-hosted Proxmox LXC); see [ADR-009](009-self-hosted-lxc-behind-reverse-proxy.md).
+> The decision above is unchanged.*

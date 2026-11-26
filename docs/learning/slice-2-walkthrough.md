@@ -551,7 +551,7 @@ To refresh the web copies, generate into a temp directory and copy the three fol
 15. `git diff --exit-code -- src/clients/web/fixtures/golden/` — fail on drift.
 16. Upload Playwright reports on failure.
 
-There is no deployment job yet; Azure arrives in Slice 6.
+There is no deployment job yet; Azure arrives in Slice 6a.
 
 ---
 
@@ -570,7 +570,7 @@ The media endpoints and DTOs are already shaped for this: a database-backed song
 
 ### Later slices
 
-Slice 4 adds authoritative playback and clock sync. Slice 5 adds zero-key YouTube search and `yt-dlp`. Slice 6 deploys to Azure free tiers. Slices 7–8 build the Android TV stage: a C++ Oboe engine, then a SkiaSharp renderer consuming the same golden decision fixtures as the web.
+Slice 4 adds authoritative playback and clock sync. Slice 5 adds zero-key YouTube search and `yt-dlp`. Slice 6a deploys to Azure free tiers. Slices 7–8 build the Android TV stage: a C++ Oboe engine, then a SkiaSharp renderer consuming the same golden decision fixtures as the web.
 
 For full file lists, tests, and Definition-of-Done prompts, read [`docs/ARCHITECTURE.md` §7](../ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap). For the deep Slice 1 explanation, read [`docs/learning/slice-1-walkthrough.md`](slice-1-walkthrough.md).
 

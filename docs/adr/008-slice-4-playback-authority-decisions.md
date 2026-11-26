@@ -55,6 +55,10 @@ These are **implementation decisions inside the unchanged Slice 4 scope**, not a
 - Slice 3 review **M2** (stage role is client-declared) and **M3** (rooms are never garbage-collected) remain open and must close before the Slice 6 public demo. Slice 4 did not address them and this ADR does not claim otherwise.
 - The `clockSync.ts` no-reschedule nit recorded in the Slice 4 review remains open unless the review's follow-up says otherwise.
 
+> *Note (2026-11-26): the public-demo milestone referenced here was later split into Slice 6a
+> (Azure) and 6b (self-hosted Proxmox LXC); see [ADR-009](009-self-hosted-lxc-behind-reverse-proxy.md).
+> This ADR's decision is unchanged.*
+
 ## Alternatives considered
 
 | Alternative | Why rejected |

@@ -7,14 +7,15 @@ This is a guided tour of **what Karaokay is, what exists today, how the pieces f
   which landed early in the mislabeled Slice 4 commit `324da8a`
 - **Slice 3 verdict:** SHIP-WITH-NITS; M1 (queue reorder skipping songs) is fixed. **M4**
   (cold-start rehydration) and **M5** (stage playback wiring) were closed by Slice 4; **M2**
-  (client-declared stage role) and **M3** (rooms never collected) remain open before the Slice 6
+  (client-declared stage role) and **M3** (rooms never collected) remain open before the Slice 6a
   public demo.
 - **Slice 4 status:** **COMPLETE.** `PlaybackAuthority` + duration watchdog, the authority-owned
   count-in, duplicate-end idempotency, authoritative stage playback, cold-start rehydration, and
   the §5.3 clock offset are all live. Slice 3 review M4/M5 are closed; M2/M3 stay open. See
   [ADR-008](adr/008-slice-4-playback-authority-decisions.md).
-- **Next up:** Slice 6 (Azure free-tier deployment and CI/CD)
-- **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.2
+- **Next up:** Slice 6a (Azure free-tier deployment and CI/CD); Slice 6b (self-hosted Proxmox LXC
+  deployment) is fully specced in [`docs/self-hosting.md`](self-hosting.md) and pending implementation
+- **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.3
 - **Slice 1 beginner guide:** [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md)
 - **Slice 2 learning snapshot:**
   [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md)
@@ -52,7 +53,7 @@ Three rules shape everything:
 
 ### What "vertical slice" means
 
-A **vertical slice** is a small, complete feature that cuts through every layer — data, server, and UI — rather than finishing one layer at a time. Each slice ends with something you can run, demo, and test. The roadmap has eight:
+A **vertical slice** is a small, complete feature that cuts through every layer — data, server, and UI — rather than finishing one layer at a time. Each slice ends with something you can run, demo, and test. The roadmap has nine entries because Slice 6 is split into 6a (Azure) and 6b (self-host):
 
 | Slice | Theme | Status |
 |---:|---|---|
@@ -61,7 +62,8 @@ A **vertical slice** is a small, complete feature that cuts through every layer 
 | 3 | SignalR rooms, queue, EF Core database, phone remote | ✅ Complete (SHIP-WITH-NITS; M1 fixed) |
 | 4 | Playback authority, clock sync, browser video mode | ✅ Complete |
 | 5 | Zero-key YouTube search and `yt-dlp` downloads | ✅ Complete early (in `324da8a`); hardening landed in follow-up |
-| 6 | Azure free-tier deployment and CI/CD | Planned |
+| 6a | Azure free-tier deployment and CI/CD | Planned |
+| 6b | Self-hosted Proxmox LXC, systemd, NPM reverse proxy | Planned (specced in [`docs/self-hosting.md`](self-hosting.md)) |
 | 7 | Android C++ Oboe audio engine | Planned |
 | 8 | Android TV SkiaSharp stage and hardening | Planned |
 
@@ -78,7 +80,7 @@ before the public demo. The Slice 4 review's hardening majors and its completion
 
 ### The blueprint and ADRs
 
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (v1.2) is the master blueprint: goals, contracts, state machines, rendering math, and the full roadmap. If this page and the blueprint disagree, the blueprint wins and one of them should be fixed.
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (v1.3) is the master blueprint: goals, contracts, state machines, rendering math, and the full roadmap. If this page and the blueprint disagree, the blueprint wins and one of them should be fixed.
 
 An **ADR** (Architecture Decision Record) is a short numbered note capturing one important decision: context, options, choice, consequences. ADRs are never rewritten; a later one may supersede an earlier one.
 
@@ -151,7 +153,7 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
 
 The Slice 3 review is [`docs/review/slice-3-review.md`](review/slice-3-review.md). Its M1 finding —
 a guest reorder could skip a song or end the room early — is fixed; M2 and M3 are recorded there as
-scheduled work for the Slice 6 demo, while **M4 and M5 were closed by the Slice 4 work**.
+scheduled work for the Slice 6a demo, while **M4 and M5 were closed by the Slice 4 work**.
 
 ### 2.4 Slice 5 — YouTube ingestion (completed early)
 
@@ -323,7 +325,11 @@ Do not look for these:
   rehydration now exists (Slice 4), but room GC does not.
 - **Stage authentication.** The stage role is self-declared in `JoinRequest` (Slice 3 review M2);
   any guest with the code can claim it until a stage secret or one-stage-per-room claim lands.
-- **Azure deployment.** No Bicep files, deploy workflow, or live URL.
+- **Deployment.** Neither Slice 6a nor Slice 6b exists yet: no Bicep files or deploy workflow, no
+  live Azure URL, no Proxmox LXC creation/provisioning scripts, no `karaokay-api.service`, and no
+  provisioned self-host stack. Both modes are specified in
+  [`docs/ARCHITECTURE.md` §7](ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap); the
+  self-host operator guide is [`docs/self-hosting.md`](self-hosting.md) (planned, Slice 6b).
 - **Android anything.** No `net10.0-android` app, C++ Oboe engine, or SkiaSharp renderer.
 
 Authoritative playback, phone-driven stage library audio, cold-start rehydration, and the browser
@@ -351,6 +357,7 @@ karaokay/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT_STATE.md      # living snapshot (this file)
+│   ├── self-hosting.md       # Slice 6b self-hosted LXC guide (planned)
 │   ├── adr/
 │   ├── learning/
 │   │   ├── slice-1-walkthrough.md
@@ -406,8 +413,8 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 
 ### 3.8 `docs/` — the written memory of the project
 
-- **`ARCHITECTURE.md`** — the master blueprint: constraints, system diagram, folder layout, the `lyrics.json` contract, EF Core entities, SignalR contracts, the room state machine, sweep-fill math, the Android audio plan, and all eight slices with Definition-of-Done prompts.
-- **`adr/`** — eight Architecture Decision Records:
+- **`ARCHITECTURE.md`** — the master blueprint: constraints, system diagram, folder layout, the `lyrics.json` contract, EF Core entities, SignalR contracts, the room state machine, sweep-fill math, the Android audio plan, and all nine slices (including the 6a/6b split) with Definition-of-Done prompts.
+- **`adr/`** — nine Architecture Decision Records:
 
 | ADR | Decision in one line |
 |---|---|
@@ -419,12 +426,14 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 | [006](adr/006-line-wrapping-ownership.md) | The renderer owns glyph-measured wrapping; the importer stores only explicit line breaks. |
 | [007](adr/007-slice-4-5-deliverable-ordering.md) | Slice 5 YouTube ingestion landed early in a commit labeled Slice 4; the original Slice 4 scope stays open. |
 | [008](adr/008-slice-4-playback-authority-decisions.md) | Slice 4 completion: bounded command-channel authority, fixed 500 ms count-in beat, persisted queue sequence, injectable clock, and blueprint filename reconciliation. |
+| [009](adr/009-self-hosted-lxc-behind-reverse-proxy.md) | Self-hosted production runs as bare-metal systemd services in an unprivileged Proxmox LXC behind the operator's NPM, with one same-origin upstream and forwarded headers. |
 
 - **`learning/slice-1-walkthrough.md`** — a long beginner guide to Slice 1: MIDI, tick math, lyric encoding, FFmpeg mixing, LUFS, and the tests.
 - **`learning/slice-2-walkthrough.md`** — the preserved "Project State After Slice 2" snapshot (commit `ebc3e95`), kept as a learning walkthrough with links fixed for its new home.
 - **`learning/slice-3-walkthrough.md`** — the deep Slice 3 guide: SignalR hubs and groups, the room registry and queue engine, EF Core persistence, the M1 reorder bug, the phone remote, and the review backlog.
 - **`learning/slice-4-walkthrough.md`** — the deep Slice 4 guide: the single-writer `PlaybackAuthority`, the count-in and duration watchdog, Ping/Pong clock sync, authoritative stage playback, and cold-start rehydration.
 - **`learning/slice-5-walkthrough.md`** — the deep Slice 5 guide: zero-key `yt-dlp` search, the bounded download worker and cache, the guest `YouTubeTab`, and the stage `<video>` surface.
+- **`self-hosting.md`** — the planned Slice 6b operator guide: Proxmox LXC creation and provisioning, Nginx Proxy Manager/TLS, configuration, updates, backups, troubleshooting, acceptance checklist, and the $0 cost table.
 - **`review/slice-1-review.md`**, **`review/slice-2-review.md`**, **`review/slice-3-review.md`**,
   **`review/slice-4-review.md`** — internal reviews with verdicts, fixed defects, and carry-forward
   backlogs. The Slice 3 record fixes M1 and schedules M2–M5 (M4/M5 since closed by Slice 4); the
@@ -512,7 +521,9 @@ One property, `MediaRoot`. `appsettings.json` uses `media/library`; `appsettings
 one the room is in-memory only. `GET /api/rooms/{code}` returns the same `RoomSnapshot` shape the hub
 sends; `GET /api/rooms/{code}/qr` renders the phone join URL as a PNG with `QRCoder`. The QR URL
 prefers a configured `PublicBaseUrl` and otherwise trusts the request scheme/host — a known
-reverse-proxy caveat recorded in the review.
+reverse-proxy caveat recorded in the review. Slice 6b (self-hosted NPM) adds `UseForwardedHeaders`
+and pins both the forwarded-host and `PublicBaseUrl` precedence in `QrJoinUrlTests`; the current
+code still has neither middleware nor a production deployment.
 
 #### `Hubs/StageHub.cs`
 
@@ -986,7 +997,7 @@ To refresh the web copies, generate into a temp directory and copy the three fol
 17. `git diff --exit-code -- src/clients/web/fixtures/golden/` — fail on drift.
 18. Upload Playwright reports on failure.
 
-There is no deployment job yet; Azure arrives in Slice 6.
+There is no deployment job yet; Azure arrives in Slice 6a, and the self-hosted Proxmox LXC path is Slice 6b.
 
 ---
 
@@ -1077,11 +1088,11 @@ scope but the Slice 3 review's M2/M3 and the ADR-005 governance gap — see the 
 These are scheduled, not optional polish:
 
 - **M2 — stage role is client-declared.** Any guest with the code can join as `"stage"`; fix before
-  the Slice 6 public demo via a stage secret/one-time claim or one-stage-per-room binding. Needs an
+  the Slice 6a public demo via a stage secret/one-time claim or one-stage-per-room binding. Needs an
   ADR because it changes the join contract.
 - **M3 — rooms are never collected.** Every `/stage` load creates a room with no GC, close path, or
   rate limit, consuming the finite 279,841-code space. Pair with room-GC work (blueprint placed it
-  in Slice 8) and land before Slice 6.
+  in Slice 8) and land before Slice 6a.
 - **M4 — persistence is write-only.** **Status: CLOSED by Slice 4.**
   `RoomRehydrator`/`RoomStateMapper` restore open rooms, playback anchors, and the persisted queue
   sequence at startup when a database is configured.
@@ -1102,11 +1113,13 @@ These are scheduled, not optional polish:
   pins `postgres-password` to a hardcoded dev value so the persisted `karaokay-postgres-data`
   volume's credentials survive restarts (without this, AddPostgres regenerates a random password
   each run and the api's startup migrations fail auth — the "api Finished in Aspire" bug).
-  Fine for localhost-only self-host dev; before Postgres is ever exposed beyond localhost
-  (notably the Slice 6 Azure deploy), switch to a user-secrets-backed parameter instead
-  (plain `AddParameter(name, secret: true)` with no literal value, value supplied via
-  `dotnet user-secrets set` in the AppHost) and reinitialize the data volume with the new
-  credentials.
+  Fine for localhost-only dev, but **Slice 6b is the slice that exposes PostgreSQL beyond
+  localhost in self-host mode**, so M6 is delivered there by two changes: (a) the provisioner
+  generates a unique password into `/etc/karaokay/karaokay.env`, and (b) the AppHost literal is
+  replaced by a user-secrets-backed parameter (plain `AddParameter(name, secret: true)` with no
+  literal value, value supplied via `dotnet user-secrets set` in the AppHost), with the data volume
+  reinitialized using the new credentials. Both are Slice 6b Files/Tests/DoD items. The Slice 6a
+  Azure deploy uses Azure SQL, not Postgres, so it does not carry this risk.
 
 ### Slice 5 — zero-key YouTube search and `yt-dlp` downloads (completed early)
 
@@ -1119,9 +1132,12 @@ contract tests have **landed** in a follow-up change. See §2.4 and the
 
 ### Later slices
 
-Slice 6 deploys to Azure free tiers. Slices 7–8 build the Android TV stage: a C++ Oboe engine, then
-a SkiaSharp renderer consuming the same golden
-decision fixtures as the web.
+Slice 6a deploys the public demo to Azure free tiers. Slice 6b provisions the real self-hosted
+deployment: one unprivileged Debian LXC on Proxmox VE running bare-metal systemd services behind
+the operator's existing Nginx Proxy Manager (TLS via Let's Encrypt + DuckDNS), with the API serving
+the built SPA from `wwwroot`; it is fully specced in [`docs/self-hosting.md`](self-hosting.md).
+Slices 7–8 build the Android TV stage: a C++ Oboe engine, then a SkiaSharp renderer consuming the
+same golden decision fixtures as the web.
 
 For full file lists, tests, and Definition-of-Done prompts, read [`docs/ARCHITECTURE.md` §7](ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap). For the deep Slice 1 explanation, read [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md); for Slice 3, read [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md).
 
@@ -1152,7 +1168,7 @@ kept the original roadmap unchanged and credited YouTube as completed early, lea
 Slice 4 open. The authority, watchdog, authoritative stage playback, cold-start rehydration, and
 duplicate-end idempotency then landed, with the implementation choices in
 [ADR-008](adr/008-slice-4-playback-authority-decisions.md). Slice 4 is now complete; Slice 3 review
-M2 (client-declared stage role) and M3 (no room GC) remain open for the Slice 6 demo.
+M2 (client-declared stage role) and M3 (no room GC) remain open for the Slice 6a demo.
 
 **Why no `react-router`?** Three routes do not justify a dependency. `App.tsx` normalizes the pathname, switches, and listens for `popstate`. A router may become worthwhile when the remote adds more screens.
 
@@ -1223,7 +1239,7 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 
 ## 10. Further reading
 
-- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the blueprint, v1.2. Start with §7 for the roadmap or §4.1 for the `lyrics.json` contract.
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the blueprint, v1.3. Start with §7 for the roadmap or §4.1 for the `lyrics.json` contract.
 - [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md) — the deep beginner guide to MIDI, tempo maps, phrase markers, FFmpeg, LUFS, and the tests.
 - [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md) — the preserved post-Slice-2 project tour, now a learning snapshot with relocated links.
 - [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md) — the deep Slice 3 guide: rooms, the queue engine, EF Core, the M1 story, and the phone remote.
@@ -1233,7 +1249,7 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 - [`docs/review/slice-2-review.md`](review/slice-2-review.md) — the browser-stage review and its nit backlog.
 - [`docs/review/slice-3-review.md`](review/slice-3-review.md) — the rooms/queue/remote review, the M1 fix, and the M2–M5 schedule.
 - [`docs/review/slice-4-review.md`](review/slice-4-review.md) — the early-YouTube/partial-Slice-4 review, the fixes that landed in its follow-ups, and the Slice 4 completion record.
-- [`docs/adr/`](adr/) — the eight decision records summarized in [§3.8](#38-docs--the-written-memory-of-the-project).
+- [`docs/adr/`](adr/) — the nine decision records summarized in [§3.8](#38-docs--the-written-memory-of-the-project).
 - [`src/apps/Karaokay.Api/Program.cs`](../src/apps/Karaokay.Api/Program.cs) — the smallest entry point; a good first read.
 - [`src/apps/Karaokay.Api/Hubs/StageHub.cs`](../src/apps/Karaokay.Api/Hubs/StageHub.cs) — the real-time entry point; read beside the TypeScript `useStageClient`.
 - [`src/clients/web/src/features/stage/StageShell.tsx`](../src/clients/web/src/features/stage/StageShell.tsx) — the phase machine tying UI, audio, and renderer together.

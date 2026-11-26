@@ -633,7 +633,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
 `ApplyDatabaseStartupAsync` asks for pending migrations, logs the count, calls `MigrateAsync`, then
 runs `DemoSongSeeder.SeedAsync`. This is a startup migration strategy: simple for a single-replica
 self-hosted app, but it means startup is coupled to the database being reachable. The public demo's
-cold-start strategy and retry behavior are Slice 6 concerns.
+cold-start strategy and retry behavior are Slice 6a concerns.
 
 `Karaokay.AppHost` wires local development:
 
@@ -929,7 +929,7 @@ with deterministic ids.
 
 **Consequences.** Great local ergonomics and one code path for tests and production. Startup now
 depends on the database being reachable, and the seeder runs N queries plus an unconditional save.
-For a single-replica self-host that is an acceptable trade; Slice 6 will need cold-start and retry
+For a single-replica self-host that is an acceptable trade; Slice 6a will need cold-start and retry
 attention.
 
 ### 7.7 Testcontainers with Docker-optional skip guards
@@ -1006,9 +1006,9 @@ PostgreSQL, so the fix is verified at both the unit and the wire level.
 
 | # | Finding | Owner / timing |
 |---|---|---|
-| M2 | Any guest can claim role `stage`. | Before the Slice 6 public demo; needs an ADR. |
-| M3 | Every `/stage` load creates a room; no GC, close, or rate limit. | With room-GC work before Slice 6. |
-| M4 | Rooms/queue persist but never rehydrate on cold restart. | Slice 4 or earlier; before Slice 6. |
+| M2 | Any guest can claim role `stage`. | Before the Slice 6a public demo; needs an ADR. |
+| M3 | Every `/stage` load creates a room; no GC, close, or rate limit. | With room-GC work before Slice 6a. |
+| M4 | Rooms/queue persist but never rehydrate on cold restart. | Slice 4 or earlier; before Slice 6a. |
 | M5 | Phone controls change room state the stage does not render. | Slice 4, or hide/flag the controls until then. |
 
 ### 8.3 Minors the owner should know
