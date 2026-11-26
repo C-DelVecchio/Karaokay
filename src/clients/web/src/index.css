@@ -312,6 +312,45 @@ main {
   font-weight: 700;
 }
 
+/* Phone count-in ring (Slice 4): one server tick per beat drives both arc and number. */
+.countdown-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-left: 0.6rem;
+  vertical-align: middle;
+}
+
+.countdown-ring svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.countdown-ring-track {
+  fill: none;
+  stroke: #2b3442;
+  stroke-width: 4;
+}
+
+.countdown-ring-progress {
+  fill: none;
+  stroke: #2f6feb;
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition-property: stroke-dashoffset;
+  transition-timing-function: linear;
+}
+
+.countdown-ring-value {
+  position: relative;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 .playback-buttons {
   display: flex;
   flex-wrap: wrap;

@@ -27,6 +27,14 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         _factory ?? throw new InvalidOperationException(
             SkipReason ?? "The PostgreSQL fixture has not been initialized.");
 
+    /// <summary>
+    /// Connection string of the backing container. Tests that boot a second host (cold-restart
+    /// rehydration) point it at the same database.
+    /// </summary>
+    public string ConnectionString =>
+        _container?.GetConnectionString() ?? throw new InvalidOperationException(
+            SkipReason ?? "The PostgreSQL fixture has not been initialized.");
+
     public async Task InitializeAsync()
     {
         try

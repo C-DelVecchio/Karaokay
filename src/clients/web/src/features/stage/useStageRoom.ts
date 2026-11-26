@@ -5,6 +5,7 @@ import {
   type CreateRoomResponse,
 } from '../../lib/signalr/protocol';
 import {
+  applyCountdownTick,
   applyDelta,
   applyDownloadFailed,
   applyDownloadProgress,
@@ -18,6 +19,16 @@ import {
 } from '../../lib/signalr/roomState';
 import { StageClient } from '../../lib/signalr/stageClient';
 
+declare global {
+  interface Window {
+    /**
+     * Test-only: biases the estimated server clock. Playwright injects a small residual error to
+     * model an 80 ms round trip without throttling the whole network stack.
+     */
+    __karaokayClockBiasMs?: number;
+  }
+}
+
 export type StageRoomStatus = 'connecting' | 'live' | 'offline';
 
 export interface StageRoomView {
@@ -29,6 +40,8 @@ export interface StageRoomView {
   serverNow: () => number;
   /** Idempotent stage-only report; the server ignores duplicates for stale queue item ids. */
   reportSongEnded: (queueItemId: string) => Promise<void>;
+  /** Stage-authoritative guide-vocal level; the server echoes it through `PlaybackChanged`. */
+  setGuideVocalVolume: (volume: number) => Promise<void>;
 }
 
 function readRequestedCode(): string | null {
@@ -104,6 +117,11 @@ export function useStageRoom(): StageRoomView {
           setRoom((current) => applyPlayback(current, playback));
         }
       },
+      onCountdownTicked: (tick) => {
+        if (!disposed) {
+          setRoom((current) => applyCountdownTick(current, tick));
+        }
+      },
       onParticipantJoined: (_displayName, guestCount) => {
         if (!disposed) {
           setRoom((current) => applyGuestCount(current, guestCount));
@@ -175,10 +193,12 @@ export function useStageRoom(): StageRoomView {
     };
   }, []);
 
-  const serverNow = useCallback(
-    () => serverNowMs(Date.now(), clockOffsetRef.current),
-    [],
-  );
+  const serverNow = useCallback(() => {
+    const bias = typeof window !== 'undefined' && Number.isFinite(window.__karaokayClockBiasMs)
+      ? window.__karaokayClockBiasMs ?? 0
+      : 0;
+    return serverNowMs(Date.now(), clockOffsetRef.current) + bias;
+  }, []);
 
   const reportSongEnded = useCallback(async (queueItemId: string): Promise<void> => {
     try {
@@ -189,5 +209,20 @@ export function useStageRoom(): StageRoomView {
     }
   }, []);
 
-  return { status, room, clockOffsetMs, serverNow, reportSongEnded };
+  const setGuideVocalVolume = useCallback(async (volume: number): Promise<void> => {
+    try {
+      await clientRef.current?.setGuideVocalVolume(volume);
+    } catch {
+      // The next playback broadcast or snapshot carries the authoritative level.
+    }
+  }, []);
+
+  return {
+    status,
+    room,
+    clockOffsetMs,
+    serverNow,
+    reportSongEnded,
+    setGuideVocalVolume,
+  };
 }

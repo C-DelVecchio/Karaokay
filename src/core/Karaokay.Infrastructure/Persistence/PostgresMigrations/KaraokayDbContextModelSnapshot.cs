@@ -101,6 +101,9 @@ namespace Karaokay.Infrastructure.Persistence.PostgresMigrations
                     b.Property<DateTime?>("PlaybackStartedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long>("QueueSequence")
+                        .HasColumnType("bigint");
+
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 

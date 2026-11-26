@@ -36,6 +36,12 @@ public class PartyRoom
     /// <summary>Beats remaining in the lead-in count-in, when in <see cref="PlaybackStatus.Countdown"/>.</summary>
     public int CountdownRemainingBeats { get; set; }
 
+    /// <summary>
+    /// Last <c>QueueDelta.Sequence</c> minted for the room (docs/ARCHITECTURE.md §5.1/§5.2).
+    /// Persisted so a cold restart never re-uses a sequence number a client has already seen.
+    /// </summary>
+    public long QueueSequence { get; set; }
+
     /// <summary>Queued entries, ordered densely by <see cref="QueueItem.Position"/>.</summary>
     public List<QueueItem> Queue { get; set; } = new();
 }

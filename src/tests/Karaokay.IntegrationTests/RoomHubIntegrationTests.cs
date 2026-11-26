@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Karaokay.IntegrationTests;
@@ -31,7 +32,11 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
     private const string UpdateStageCapabilitiesMethod = "UpdateStageCapabilities";
     private const string JoinedRoomEvent = "JoinedRoom";
     private const string QueueChangedEvent = "QueueChanged";
+    private const string PlaybackChangedEvent = "PlaybackChanged";
+    private const string CountdownTickedEvent = "CountdownTicked";
     private const string HubErrorEvent = "HubError";
+
+    private static readonly int[] ExpectedCountdownBeats = [4, 3, 2, 1];
 
     private readonly PostgresApiFixture _fixture;
 
@@ -304,9 +309,13 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         var third = await EnqueueAsync(guest, songIds[2]).ConfigureAwait(false);
 
         await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
-        var started = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        var started = await WaitForPlaybackStatusAsync(
+                http,
+                room.Code,
+                PlaybackStatus.Playing,
+                TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
         Assert.Equal(first.QueueItemId, started.Playback.CurrentQueueItemId);
-        Assert.Equal(PlaybackStatus.Playing, started.Status);
 
         // A guest puts the last song "on top"; it may not land before the playing song or the
         // cursor would skip it when the current song ends (review M1).
@@ -345,6 +354,13 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
 
         await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+        var started = await WaitForPlaybackStatusAsync(
+                http,
+                room.Code,
+                PlaybackStatus.Playing,
+                TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+        Assert.Equal(first.QueueItemId, started.Playback.CurrentQueueItemId);
         using var errors = new ErrorCollector(guest);
 
         await guest.InvokeAsync(MoveQueueItemMethod, first.QueueItemId, 1).ConfigureAwait(false);
@@ -378,9 +394,21 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
 
         await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
-        var playing = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
-        Assert.Equal(PlaybackStatus.Playing, playing.Status);
-        Assert.Equal(PlaybackStatus.Playing, playing.Playback.Status);
+
+        // Start is two-phase: the authority counts in, then starts the song with a fresh anchor.
+        var countingIn = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Countdown, countingIn.Status);
+        Assert.Equal(PlaybackStatus.Countdown, countingIn.Playback.Status);
+        Assert.Equal(first.QueueItemId, countingIn.Playback.CurrentQueueItemId);
+        Assert.Equal(0L, countingIn.Playback.PositionMs);
+        Assert.Equal(4, countingIn.Playback.CountdownRemainingBeats);
+
+        var playing = await WaitForPlaybackStatusAsync(
+                http,
+                room.Code,
+                PlaybackStatus.Playing,
+                TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
         Assert.Equal(first.QueueItemId, playing.Playback.CurrentQueueItemId);
 
         await guest.InvokeAsync("PausePlayback").ConfigureAwait(false);
@@ -410,6 +438,271 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         Assert.Null(idle.Playback.CurrentQueueItemId);
     }
 
+    [SkippableFact]
+    public async Task PlaybackAuthorityBroadcastsAnchorAndPreservesPositionAcrossPauseResume()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 2).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+        using var playback = new PlaybackCollector(guest);
+        using var countdown = new CountdownCollector(guest);
+
+        var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
+        var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
+
+        var startedAt = DateTimeOffset.UtcNow;
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+
+        var countingIn = await playback
+            .WaitForAsync(state => state.Status == PlaybackStatus.Countdown)
+            .ConfigureAwait(false);
+        Assert.Equal(first.QueueItemId, countingIn.CurrentQueueItemId);
+        Assert.Equal(0L, countingIn.PositionMs);
+        Assert.Equal(4, countingIn.CountdownRemainingBeats);
+
+        var playing = await playback
+            .WaitForAsync(state =>
+                state.Status == PlaybackStatus.Playing
+                && state.CurrentQueueItemId == first.QueueItemId)
+            .ConfigureAwait(false);
+        Assert.InRange(playing.PositionMs, 0, 1_000);
+        Assert.Null(playing.CountdownRemainingBeats);
+        Assert.InRange(
+            playing.TimeAnchorUtc,
+            startedAt.AddSeconds(-5),
+            startedAt.AddSeconds(20));
+
+        // The pinned wire contract: one tick per beat with remainingBeats 4 → 1 at beatMs 500.
+        await countdown.WaitForCountAsync(4).ConfigureAwait(false);
+        Assert.Equal(
+            ExpectedCountdownBeats,
+            countdown.Ticks.Select(tick => tick.RemainingBeats));
+        Assert.All(countdown.Ticks, tick => Assert.Equal(500, tick.BeatMs));
+        Assert.All(countdown.Ticks, tick => Assert.Equal(first.QueueItemId, tick.QueueItemId));
+
+        await Task.Delay(200).ConfigureAwait(false);
+        await guest.InvokeAsync("PausePlayback").ConfigureAwait(false);
+
+        var paused = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Paused, paused.Playback.Status);
+        Assert.Equal(first.QueueItemId, paused.Playback.CurrentQueueItemId);
+        Assert.True(paused.Playback.PositionMs >= 150);
+
+        var resumeRequestedAt = DateTimeOffset.UtcNow;
+        await guest.InvokeAsync("ResumePlayback").ConfigureAwait(false);
+        var resumed = await playback
+            .WaitForAsync(state =>
+                state.Status == PlaybackStatus.Playing
+                && state.CurrentQueueItemId == first.QueueItemId
+                && state.PositionMs >= paused.Playback.PositionMs)
+            .ConfigureAwait(false);
+
+        // DoD: pause/resume preserves the position within ±30 ms of the authority's PositionMs.
+        // Comparing `resumed.PositionMs - paused.PositionMs` directly would conflate real drift
+        // with the database write that happens between the command and the broadcast: because the
+        // room is persisted before PlaybackChanged, resumed.PositionMs already includes that write
+        // latency and can exceed 30 ms purely from persistence. Instead reconstruct the authority's
+        // playback-start instant from the resumed broadcast itself (anchor − position). Both values
+        // come from the same message, so persist and transport latency cancel; the remaining delta
+        // is only the resume request's delivery into the authority. If resume had silently
+        // restarted at zero, the implied start would sit ~pausedPos later and fail loudly.
+        var resumedStartUtc = resumed.TimeAnchorUtc - TimeSpan.FromMilliseconds(resumed.PositionMs);
+        var expectedStartUtc = resumeRequestedAt - TimeSpan.FromMilliseconds(paused.Playback.PositionMs);
+        Assert.InRange(
+            Math.Abs((resumedStartUtc - expectedStartUtc).TotalMilliseconds),
+            0,
+            30);
+
+        await guest.InvokeAsync("SkipSong").ConfigureAwait(false);
+        var afterSkip = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, afterSkip.Status);
+        Assert.Equal(second.QueueItemId, afterSkip.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Ended,
+            afterSkip.Queue.Single(item => item.Id == first.QueueItemId).State);
+    }
+
+    [SkippableFact]
+    public async Task SetGuideVocalVolumeBroadcastReachesEveryClient()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+
+        await using var guestA = await ConnectAsync().ConfigureAwait(false);
+        await using var guestB = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guestA, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+        Assert.True((await JoinAsync(guestB, room.Code, "Grace", "guest").ConfigureAwait(false)).Ack.Success);
+
+        using var playbackA = new PlaybackCollector(guestA);
+        using var playbackB = new PlaybackCollector(guestB);
+
+        await guestA.InvokeAsync("SetGuideVocalVolume", 0.35).ConfigureAwait(false);
+
+        var stateA = await playbackA
+            .WaitForAsync(state => Math.Abs(state.GuideVocalVolume - 0.35) < 0.0001)
+            .ConfigureAwait(false);
+        var stateB = await playbackB
+            .WaitForAsync(state => Math.Abs(state.GuideVocalVolume - 0.35) < 0.0001)
+            .ConfigureAwait(false);
+
+        Assert.Equal(0.35, stateA.GuideVocalVolume);
+        Assert.Equal(0.35, stateB.GuideVocalVolume);
+    }
+
+    [SkippableFact]
+    public async Task WatchdogEndsStalledPlaybackAfterDurationPlusGrace()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var shortSongId = await InsertShortSongAsync(durationMs: 250).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+
+        var entry = await EnqueueAsync(guest, shortSongId).ConfigureAwait(false);
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+
+        var started = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Countdown, started.Status);
+        Assert.Equal(entry.QueueItemId, started.Playback.CurrentQueueItemId);
+
+        // count-in (2 s) + duration (250 ms) + 5 s grace; poll generously for a slow CI container.
+        var ended = await WaitForSnapshotAsync(
+                http,
+                room.Code,
+                snapshot => snapshot.Playback.Status == PlaybackStatus.Idle,
+                TimeSpan.FromSeconds(25))
+            .ConfigureAwait(false);
+
+        Assert.Null(ended.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Ended,
+            ended.Queue.Single(item => item.Id == entry.QueueItemId).State);
+    }
+
+    [SkippableFact]
+    public async Task DuplicateEndReportCannotDoubleAdvance()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 2).ConfigureAwait(false);
+
+        await using var stage = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(stage, room.Code, "Stage", "stage").ConfigureAwait(false)).Ack.Success);
+
+        var first = await EnqueueAsync(stage, songIds[0]).ConfigureAwait(false);
+        var second = await EnqueueAsync(stage, songIds[1]).ConfigureAwait(false);
+        await stage.InvokeAsync("StartPlayback").ConfigureAwait(false);
+
+        // Let the authority-owned count-in complete so the report targets a Playing song.
+        var started = await WaitForPlaybackStatusAsync(
+                http,
+                room.Code,
+                PlaybackStatus.Playing,
+                TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+        Assert.Equal(first.QueueItemId, started.Playback.CurrentQueueItemId);
+
+        await stage
+            .InvokeAsync(ReportSongEndedMethod, first.QueueItemId)
+            .ConfigureAwait(false);
+
+        var advanced = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(second.QueueItemId, advanced.Playback.CurrentQueueItemId);
+        Assert.Equal(PlaybackStatus.Playing, advanced.Status);
+
+        // The stage (or the watchdog) reports the same end again: the guard drops it because the
+        // cursor already moved, so B keeps playing and the room never skips to Idle.
+        await stage
+            .InvokeAsync(ReportSongEndedMethod, first.QueueItemId)
+            .ConfigureAwait(false);
+
+        var afterDuplicate = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, afterDuplicate.Status);
+        Assert.Equal(second.QueueItemId, afterDuplicate.Playback.CurrentQueueItemId);
+        Assert.Equal(
+            QueueItemState.Playing,
+            afterDuplicate.Queue.Single(item => item.Id == second.QueueItemId).State);
+        Assert.Equal(
+            QueueItemState.Ended,
+            afterDuplicate.Queue.Single(item => item.Id == first.QueueItemId).State);
+    }
+
+    [SkippableFact]
+    public async Task ColdRestartRehydratesQueueSequenceAndPlaybackAnchor()
+    {
+        RequireDocker();
+
+        using var http = _fixture.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+        var songIds = await GetDemoSongIdsAsync(http, 2).ConfigureAwait(false);
+
+        await using var guest = await ConnectAsync().ConfigureAwait(false);
+        Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+
+        var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
+        await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
+        await guest.InvokeAsync("SetGuideVocalVolume", 0.25).ConfigureAwait(false);
+        await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
+
+        // Let the count-in complete; the persisted anchor is then the playing anchor.
+        await WaitForPlaybackStatusAsync(
+                http,
+                room.Code,
+                PlaybackStatus.Playing,
+                TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+        await Task.Delay(250).ConfigureAwait(false);
+
+        var before = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        Assert.Equal(PlaybackStatus.Playing, before.Playback.Status);
+        Assert.Equal(first.QueueItemId, before.Playback.CurrentQueueItemId);
+
+        // A brand-new host against the same database runs the real startup path: migrate, seed,
+        // then rebuild the live registry from persisted rooms. No in-memory state survives.
+        await using var restartedFactory = new WebApplicationFactory<ApiHost::Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.UseSetting(
+                    "ConnectionStrings:Karaokay",
+                    _fixture.ConnectionString);
+                builder.UseSetting("MediaRoot", RepoPaths.DemoMediaRoot);
+                builder.ConfigureAppConfiguration((_, configuration) =>
+                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["Features:EnableYouTubeIngestion"] = "false",
+                    }));
+            });
+
+        using var restartedHttp = restartedFactory.CreateClient();
+        using var health = await restartedHttp.GetAsync("/healthz").ConfigureAwait(false);
+        health.EnsureSuccessStatusCode();
+
+        var restored = await GetSnapshotAsync(restartedHttp, room.Code).ConfigureAwait(false);
+
+        Assert.Equal(before.QueueSequence, restored.QueueSequence);
+        Assert.Equal(
+            before.Queue.Select(item => (item.Id, item.Position, item.State)),
+            restored.Queue.Select(item => (item.Id, item.Position, item.State)));
+        Assert.Equal(PlaybackStatus.Playing, restored.Playback.Status);
+        Assert.Equal(before.Playback.CurrentQueueItemId, restored.Playback.CurrentQueueItemId);
+        Assert.Equal(0.25, restored.Playback.GuideVocalVolume);
+
+        // The anchor keeps flowing from the persisted start instant: the song was never paused.
+        Assert.True(restored.Playback.PositionMs >= before.Playback.PositionMs);
+    }
+
     private void RequireDocker() =>
         Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason ?? "Docker unavailable.");
 
@@ -429,6 +722,18 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
             .ConfigureAwait(false);
         return Assert.IsType<RoomSnapshot>(snapshot);
     }
+
+    private static async Task<RoomSnapshot> WaitForPlaybackStatusAsync(
+        HttpClient http,
+        string roomCode,
+        PlaybackStatus status,
+        TimeSpan timeout) =>
+        await WaitForSnapshotAsync(
+                http,
+                roomCode,
+                snapshot => snapshot.Playback.Status == status,
+                timeout)
+            .ConfigureAwait(false);
 
     private async Task<HubConnection> ConnectAsync()
     {
@@ -501,6 +806,51 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
 
         Assert.Equal(count, ids.Length);
         return ids;
+    }
+
+    /// <summary>
+    /// Inserts a dedicated short song so the watchdog can be exercised without waiting for a real
+    /// demo track to finish. The row is not a demo song, so no other test is affected.
+    /// </summary>
+    private async Task<Guid> InsertShortSongAsync(long durationMs)
+    {
+        var songId = Guid.NewGuid();
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<KaraokayDbContext>();
+        database.Songs.Add(new Karaokay.Domain.Song
+        {
+            Id = songId,
+            Title = $"Watchdog sprint {songId:N}",
+            DurationMs = durationMs,
+            Source = Karaokay.Domain.MediaSource.Multitrack,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await database.SaveChangesAsync().ConfigureAwait(false);
+        return songId;
+    }
+
+    private static async Task<RoomSnapshot> WaitForSnapshotAsync(
+        HttpClient http,
+        string roomCode,
+        Func<RoomSnapshot, bool> predicate,
+        TimeSpan timeout)
+    {
+        var timeoutAt = DateTime.UtcNow + timeout;
+        RoomSnapshot? last = null;
+
+        while (DateTime.UtcNow < timeoutAt)
+        {
+            last = await GetSnapshotAsync(http, roomCode).ConfigureAwait(false);
+            if (predicate(last))
+            {
+                return last;
+            }
+
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+
+        Assert.Fail($"Timed out waiting for the expected room snapshot; last status was {last?.Status}.");
+        return last!;
     }
 
     private static async Task WaitForDeltasAsync(
@@ -590,6 +940,76 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
 
             Assert.Fail("Timed out waiting for the expected HubError.");
             return null!;
+        }
+
+        public void Dispose() => _subscription.Dispose();
+    }
+
+    private sealed class PlaybackCollector : IDisposable
+    {
+        private readonly ConcurrentQueue<PlaybackStateDto> _states = new();
+        private readonly IDisposable _subscription;
+
+        public PlaybackCollector(HubConnection connection)
+        {
+            _subscription = connection.On<PlaybackStateDto>(
+                PlaybackChangedEvent,
+                state => _states.Enqueue(state));
+        }
+
+        public IReadOnlyList<PlaybackStateDto> States => [.. _states];
+
+        public async Task<PlaybackStateDto> WaitForAsync(Func<PlaybackStateDto, bool> predicate)
+        {
+            var timeoutAt = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < timeoutAt)
+            {
+                var match = _states.FirstOrDefault(predicate);
+                if (match is not null)
+                {
+                    return match;
+                }
+
+                await Task.Delay(25).ConfigureAwait(false);
+            }
+
+            Assert.Fail("Timed out waiting for the expected PlaybackChanged broadcast.");
+            return null!;
+        }
+
+        public void Dispose() => _subscription.Dispose();
+    }
+
+    private sealed class CountdownCollector : IDisposable
+    {
+        private readonly ConcurrentQueue<CountdownDto> _ticks = new();
+        private readonly IDisposable _subscription;
+
+        public CountdownCollector(HubConnection connection)
+        {
+            _subscription = connection.On<CountdownDto>(
+                CountdownTickedEvent,
+                tick => _ticks.Enqueue(tick));
+        }
+
+        public IReadOnlyList<CountdownDto> Ticks => [.. _ticks];
+
+        public async Task WaitForCountAsync(int expectedCount)
+        {
+            var timeoutAt = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < timeoutAt)
+            {
+                if (_ticks.Count >= expectedCount)
+                {
+                    return;
+                }
+
+                await Task.Delay(25).ConfigureAwait(false);
+            }
+
+            Assert.Fail(
+                $"Timed out waiting for {expectedCount} CountdownTicked beat(s); " +
+                $"observed {_ticks.Count}.");
         }
 
         public void Dispose() => _subscription.Dispose();

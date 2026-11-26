@@ -305,6 +305,20 @@ export class WebAudioEngine {
     return true;
   }
 
+  /**
+   * Stops both sources while preserving the current media position, so a subsequent `start()`
+   * resumes from the pause point without re-decoding. Never fires `onEnded`.
+   */
+  pause(): number {
+    const positionMs = Math.max(0, this.positionMs());
+    this.stoppedByUs = true;
+    this.stopSources();
+    this.isPlaying = false;
+    this.startCtxTime = 0;
+    this.startOffsetMs = positionMs;
+    return positionMs;
+  }
+
   /** Stops and disconnects the current sources; never fires `onEnded`. */
   stop(): void {
     this.stoppedByUs = true;

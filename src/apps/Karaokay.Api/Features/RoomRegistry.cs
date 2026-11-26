@@ -170,6 +170,12 @@ public sealed class RoomState
     /// <summary>Advances and returns the next monotonic queue sequence.</summary>
     public long NextQueueSequence() => Interlocked.Increment(ref _queueSequence);
 
+    /// <summary>
+    /// Restores the persisted queue sequence during cold-start rehydration so new deltas stay
+    /// above anything clients observed before the restart (docs/ARCHITECTURE.md §5.2).
+    /// </summary>
+    internal void RestoreQueueSequence(long sequence) => Interlocked.Exchange(ref _queueSequence, sequence);
+
     /// <summary>Finds a queue entry by id.</summary>
     public RoomQueueEntry? FindQueueEntry(Guid queueItemId)
     {

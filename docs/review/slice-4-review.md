@@ -172,3 +172,72 @@ remaining work. Slice 3 review M4/M5 stay open until those land.
 The follow-up majors (M3–M5, strict format enforcement, development paths, CI Docker gating, DTO
 parity) landed with tests. The minor/nit backlog in sections d and e is carried forward rather than
 rediscovered; none of it blocks the documentation correction in this change.
+
+## h) Follow-up #2 — Slice 4 completion (2026-11-25)
+
+The backlog §g called "not optional and planned next" has landed. This section records the
+completion and supersedes §g's open-status statements; the earlier sections stay as written so the
+review trail shows what was owed.
+
+| Previously open item | Where it landed | Status |
+|---|---|---|
+| `PlaybackAuthority` + duration watchdog | `src/apps/Karaokay.Api/Features/PlaybackAuthority.cs`, `Features/PlaybackTiming.cs`; registered as a singleton hosted service in `Program.cs` | **Landed.** Single writer over a bounded channel (256, wait, single reader) of `RoomCommand` + `TaskCompletionSource`; transitions persist before broadcast under the room lock; 100 ms watchdog ends a `Playing` room at `PlaybackStartedAtUtc + DurationMs + 5 s`. |
+| Duplicate-end idempotency against the watchdog race | `PlaybackAuthority.cs` (shared `queueItemId == CurrentQueueItemId` guard under the command lock) | **Landed.** A duplicate stage report and a post-report watchdog firing cannot double-advance. |
+| Authority count-in and phone countdown ring (`CountdownTicked`) | `Features/PlaybackTiming.cs`, `PlaybackAuthority.cs`; `src/clients/web/src/lib/signalr/roomState.ts` (`applyCountdownTick`), `features/remote/PlaybackControls.tsx` (SVG ring) | **Landed.** Four 500 ms beats, 4 → 1, then `Playing` with a fresh anchor. |
+| Authoritative stage playback wiring (Slice 3 review **M5**) | `src/clients/web/src/features/stage/playbackController.ts`, `songMedia.ts`, `StageShell.tsx`; `WebAudioEngine.pause()` | **Landed.** Room playback takes over library audio; one-time `anchorCorrection = expectedMs − audioPositionMs`, audio as ground truth; `DemoTrackPicker` is an idle fallback only. M5 is closed. |
+| Cold-start rehydration (Slice 3 review **M4**) | `Features/RoomRehydrator.cs`, `Features/RoomStateMapper.cs`, `Program.ApplyDatabaseStartupAsync`; migration `20261125160000_AddRoomQueueSequence`; `RoomRegistry.RestoreQueueSequence` | **Landed.** Open rooms, ordered queue, anchors, and a write-ahead-minted `PartyRoom.QueueSequence` restored; dangling cursor → `Idle`; stale duplicate `Playing` rows demoted. M4 is closed. |
+| Clock sync used by authoritative playback | `src/clients/web/src/lib/signalr/clockSync.ts` | **Already landed in the first follow-up**; now consumed by `playbackController.ts` for start alignment and mid-song joins. |
+| Guide-vocal slider through the hub | `StageHub.SetGuideVocalVolume` → authority; `useStageRoom.setGuideVocalVolume` | **Landed.** |
+
+**Final verification on the completed tree.** `dotnet build` Debug and Release: **0 warnings**.
+.NET: **188 unit + 11 architecture + 31 integration passing**, with **28 Docker-gated integration
+tests skipped locally** (Docker is unavailable on this machine; CI runs them). The five new Slice 4
+integration tests cover the two-phase Start broadcast and tick contract, ±30 ms pause/resume, the
+watchdog, duplicate-end, and cold-restart rehydration. Web: Vitest **120 tests / 15 files** passing,
+`npm run build` green, Playwright **11 tests / 7 spec files** passing, including the new
+`e2e/playback-authority.spec.ts` (phone-driven Start/Pause/Resume/Skip converge on the stage; a
+mid-song stage join aligns under a +40 ms clock bias standing in for RTT/2) and a +300 ms
+`injectDrift` hard-nudge assertion added to `e2e/youtube.spec.ts`.
+
+**Still open (not claimed by this follow-up).**
+
+- Slice 3 review **M2** — the stage role is client-declared; needs an ADR before the Slice 6 public
+  demo.
+- Slice 3 review **M3** — rooms are never garbage-collected.
+- The `clockSync.ts:239-241` nit from §e. Checked on the current tree: `tick()` still returns when
+  `inFlightGeneration === generation` without rescheduling, so the nit **remains open**. (It is
+  hard to reach in practice because only one tick is scheduled at a time, but the described path is
+  unchanged.)
+- The minor/nit backlog in sections d and e, except for the corrected blind-spot item below.
+- §f's "three dead contract entries" has shrunk to two: `CountdownTicked` is now sent by the
+  server and handled by both the stage and the phone; `LyricsLoaded` and `SearchCompleted` remain
+  declared but unsent.
+- Slices 6–8.
+
+The implementation choices behind these files are recorded in
+[ADR-008](../adr/008-slice-4-playback-authority-decisions.md); the blueprint's Slice 4 file list now
+points at `lib/signalr/clockSync.ts` and `useStageVideo.ts` as well.
+
+**Addendum (2026-11-25, post-audit).** Two fixes landed after the table above was written:
+
+1. **Removing the current item now persists the playback reset before it broadcasts.**
+   `QueueService.RemoveQueueItemAsync` clears the cursor and returns the room to `Idle` when the
+   removed entry is current — a playback mutation — so that branch now mints the queue sequence,
+   writes the playback reset with `PersistRoomAsync`, persists the renumbered queue, and only then
+   fans out `QueueChanged` and the playback broadcast, matching the write-ahead ordering in §5.1
+   rule 6. Pinned by `RemovingTheCurrentItemPersistsTheIdlePlaybackReset` in
+   `src/tests/Karaokay.UnitTests/QueueServiceTests.cs`; it runs on the EF InMemory harness double
+   and re-reads the row through a fresh `AsNoTracking` query, so the assertions prove `SaveChanges`
+   durability rather than in-memory state.
+2. **`RemoveQueueItem` on the hub routes through the authority.** `StageHub.RemoveQueueItem` still
+   does the membership/role check itself, but dispatches `RoomCommandTypes.RemoveQueueItem` over the
+   `PlaybackAuthority` command channel instead of calling `QueueService` directly, so the single
+   writer owns the removal and any reset it triggers (§5.1 rule 6). A missing item still surfaces
+   the `NotFound` hub error, now derived from the command result.
+
+Local verification precondition: `src/clients/web/playwright.config.ts` now retries once locally
+(`retries: process.env.CI ? 2 : 1`) rather than not at all. The first cold run under 8 parallel
+workers starves the four timing-sensitive specs — the decode poll, the two position-progression
+polls, and the YouTube drift `beforeMs` assertion — and with zero local retries that baseline flake
+failed the lane instead of recovering on a warm second attempt. CI's value of 2 is unchanged; the
+specs and their assertions are untouched.

@@ -20,7 +20,11 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 2 : 0,
+  // CI keeps two retries. Locally one retry is enough: the first cold run under 8 parallel
+  // workers starves the four timing-sensitive specs (the decode poll, the two position-progression
+  // polls, and the youtube drift `beforeMs` assertion), and with zero local retries that cold-start
+  // flake failed the lane instead of recovering.
+  retries: process.env.CI ? 2 : 1,
   reporter: process.env.CI
     ? [['github'], ['html', { open: 'never' }]]
     : 'list',

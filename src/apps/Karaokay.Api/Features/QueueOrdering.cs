@@ -62,7 +62,8 @@ internal static class QueueOrdering
 
     /// <summary>
     /// Moves one upcoming entry to <paramref name="newPosition"/> (a dense queue index) and
-    /// renumbers the queue. <c>Playing</c>/<c>Ended</c> entries are rejected; a target before the
+    /// renumbers the queue. <c>Playing</c>/<c>Ended</c> entries and the current cursor (which is
+    /// also the count-in item while the room is <c>Countdown</c>) are rejected; a target before the
     /// current entry is clamped to the first upcoming slot, so a guest asking to put a song "on
     /// top" makes it play next instead of stranding it behind the cursor.
     /// </summary>
@@ -78,7 +79,8 @@ internal static class QueueOrdering
             return QueueMoveResult.NotFound;
         }
 
-        if (entry.State is QueueItemState.Playing or QueueItemState.Ended)
+        if (entry.State is QueueItemState.Playing or QueueItemState.Ended
+            || (currentQueueItemId is { } currentId && entry.Id == currentId))
         {
             return QueueMoveResult.NotMovable;
         }
@@ -88,8 +90,8 @@ internal static class QueueOrdering
 
         // Upcoming entries must stay after the cursor. When the room is idle, keep them after the
         // ended-history prefix so history and upcoming rows never interleave.
-        var lowerBound = currentQueueItemId is { } currentId
-            ? IndexOf(ordered, currentId) + 1
+        var lowerBound = currentQueueItemId is { } cursorId
+            ? IndexOf(ordered, cursorId) + 1
             : CountEndedPrefix(ordered);
         lowerBound = Math.Max(0, lowerBound);
 

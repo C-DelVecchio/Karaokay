@@ -1,18 +1,19 @@
-# Karaokay — Project State After Slice 3, Partial Slice 4, and Early Slice 5
+# Karaokay — Project State After Slice 4 and Early Slice 5
 
 This is a guided tour of **what Karaokay is, what exists today, how the pieces fit together, and how to run it**. It assumes you can read a file and follow a command, but not that you have met terms like *Minimal API*, *Web Audio*, *ETag*, or *vertical slice*. Terms are defined where they matter for understanding that section, and there is a [Glossary](#9-glossary) near the end.
 
 - **Snapshot date:** 2026-11-25
-- **Completed:** Slice 1, Slice 2, Slice 3, and the documented Slice 5 YouTube ingestion — which
-  landed early in the mislabeled Slice 4 commit `324da8a`
-- **Slice 3 verdict:** SHIP-WITH-NITS; M1 (queue reorder skipping songs) is fixed, and majors
-  M2–M5 are scheduled before the Slice 6 public demo. M4 and M5 are still open.
-- **Slice 4 status:** **PARTIALLY COMPLETE / OPEN.** The stage video surface exists and now uses
-  the §5.3 Ping/Pong wall-clock offset instead of the raw local clock, but `PlaybackAuthority` +
-  watchdog, authoritative stage playback, cold-start rehydration, and duplicate-end idempotency
-  are still owed. The documented Slice 4 scope is unchanged; see
-  [ADR-007](adr/007-slice-4-5-deliverable-ordering.md).
-- **Next up:** close the remaining Slice 4 deliverables, then continue with Slice 6
+- **Completed:** Slice 1, Slice 2, Slice 3, Slice 4, and the documented Slice 5 YouTube ingestion —
+  which landed early in the mislabeled Slice 4 commit `324da8a`
+- **Slice 3 verdict:** SHIP-WITH-NITS; M1 (queue reorder skipping songs) is fixed. **M4**
+  (cold-start rehydration) and **M5** (stage playback wiring) were closed by Slice 4; **M2**
+  (client-declared stage role) and **M3** (rooms never collected) remain open before the Slice 6
+  public demo.
+- **Slice 4 status:** **COMPLETE.** `PlaybackAuthority` + duration watchdog, the authority-owned
+  count-in, duplicate-end idempotency, authoritative stage playback, cold-start rehydration, and
+  the §5.3 clock offset are all live. Slice 3 review M4/M5 are closed; M2/M3 stay open. See
+  [ADR-008](adr/008-slice-4-playback-authority-decisions.md).
+- **Next up:** Slice 6 (Azure free-tier deployment and CI/CD)
 - **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.2
 - **Slice 1 beginner guide:** [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md)
 - **Slice 2 learning snapshot:**
@@ -56,23 +57,22 @@ A **vertical slice** is a small, complete feature that cuts through every layer 
 | 1 | MIDI → `lyrics.json`, synthetic demos, importer CLI, room codes | ✅ Complete |
 | 2 | HTTP media endpoints + browser stage with Web Audio and Canvas | ✅ Complete |
 | 3 | SignalR rooms, queue, EF Core database, phone remote | ✅ Complete (SHIP-WITH-NITS; M1 fixed) |
-| 4 | Playback authority, clock sync, browser video mode | 🚧 Partial — clock-synced video surface exists; authority, rehydration, and idempotency stay open |
+| 4 | Playback authority, clock sync, browser video mode | ✅ Complete |
 | 5 | Zero-key YouTube search and `yt-dlp` downloads | ✅ Complete early (in `324da8a`); hardening landed in follow-up |
 | 6 | Azure free-tier deployment and CI/CD | Planned |
 | 7 | Android C++ Oboe audio engine | Planned |
 | 8 | Android TV SkiaSharp stage and hardening | Planned |
 
-Slices 1–3 and the documented Slice 5 are **complete**; Slice 4 is **partial**. Commit
-`324da8a` is titled "slice-4" but implemented the Slice 5 YouTube pipeline, so the number in the
-commit title does not describe its contents. The original roadmap stays unchanged — see
-[ADR-007](adr/007-slice-4-5-deliverable-ordering.md). The unit and Vitest lanes pass locally; the
-Testcontainers PostgreSQL integration tests are exercised in CI and skip locally when Docker is
-unavailable, while the YouTube hub/REST contract edges that need no database run against a DB-less
-host everywhere.
-The Slice 3 review left four majors scheduled as later work (stage-role trust, room GC,
-cold-restart rehydration, and stage playback wiring); M2/M3 must close before the public demo, and
-M4/M5 are still open. The Slice 4 review adds hardening majors that have **landed** in a
-follow-up change.
+Slices 1–5 are **complete**, with Slice 5 delivered early out of order. Commit `324da8a` is titled
+"slice-4" but implemented the Slice 5 YouTube pipeline, so the number in the commit title does not
+describe its contents; [ADR-007](adr/007-slice-4-5-deliverable-ordering.md) kept the original
+roadmap unchanged, and the documented Slice 4 was completed afterwards. The unit and Vitest lanes
+pass locally; the Testcontainers PostgreSQL integration tests are exercised in CI and skip locally
+when Docker is unavailable, while the YouTube hub/REST contract edges that need no database run
+against a DB-less host everywhere. The Slice 3 review's M4 (cold-start rehydration) and M5 (stage
+playback wiring) were closed by Slice 4; **M2 (stage-role trust) and M3 (room GC)** must close
+before the public demo. The Slice 4 review's hardening majors and its completion backlog have
+**landed** in follow-up changes.
 
 ### The blueprint and ADRs
 
@@ -128,24 +128,26 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
   before broadcasting (memory mutates first, so a persistence failure can leave memory ahead of the
   database — review minor #9), renumbers dense positions, and emits one monotonic sequence per
   change.
-  Playback is a deliberately small subset of §5.1: start, pause, resume, skip, restart, and an
-  idempotent stage end report. Reordering is forward-only — the playing song and ended history are
-  the cursor and cannot be moved.
+  Playback at the end of Slice 3 was a deliberately small subset of §5.1: start, pause, resume,
+  skip, restart, and an idempotent stage end report; Slice 4 later moved these transitions behind
+  `PlaybackAuthority` and added the count-in, watchdog, and rehydration (§2.5). Reordering is
+  forward-only — the playing song and ended history are the cursor and cannot be moved.
 - **Phone remote.** `/remote?code=XXXX` (also `/remote` with a manual code) has a join screen, a
   lobby with the room code, a library tab, a queue tab with reorder/remove, and playback controls.
-  The stage at `/stage` now creates a room, shows its code and QR in a corner overlay, and renders
-  the shared queue. Its library audio still comes from the local `DemoTrackPicker`; the YouTube
-  `<video>` path added in `324da8a` does consume room playback (see §2.4).
+  The stage at `/stage` creates a room, shows its code and QR in a corner overlay, and renders the
+  shared queue. At the end of Slice 3 its library audio still came from the local `DemoTrackPicker`;
+  Slice 4 replaced that with authoritative room playback (§2.5).
 - **Tests.** The .NET suite had **84 tests** at the reviewed commit: 11 architecture, 38 unit, and
   35 integration (29 passed + 6 Testcontainers tests skipped without Docker), for 78 passed / 6
-  skipped. The M1 fix added 8 unit and 3 integration tests. After the early Slice 5 work and the
-  follow-up hardening, the current tree has **164 unit + 11 architecture + 31 integration passing**
-  (206 passed of 229 total), with **23 Docker-gated integration tests skipped locally**; Vitest is
-  at **92 tests** and Playwright at **9**. Numbers measured 2026-11-25.
+  skipped. The M1 fix added 8 unit and 3 integration tests. After the early Slice 5 work, the
+  follow-up hardening, and Slice 4, the current tree has **188 unit + 11 architecture + 31
+  integration passing** (230 passed of 258 total), with **28 Docker-gated integration tests skipped
+  locally**; Vitest is at **120 tests in 15 files** and Playwright at **11 tests in 7 spec files**.
+  Numbers measured 2026-11-25.
 
 The Slice 3 review is [`docs/review/slice-3-review.md`](review/slice-3-review.md). Its M1 finding —
-a guest reorder could skip a song or end the room early — is fixed; M2–M5 are recorded there as
-scheduled work, and M4/M5 remain **open** after `324da8a`.
+a guest reorder could skip a song or end the room early — is fixed; M2 and M3 are recorded there as
+scheduled work for the Slice 6 demo, while **M4 and M5 were closed by the Slice 4 work**.
 
 ### 2.4 Slice 5 — YouTube ingestion (completed early)
 
@@ -177,9 +179,10 @@ What landed:
   (`Queued`, percentage, `Ready`/cached, `Failed` + retry) driven by the room-state reducers.
 - **Stage video surface.** `StageShell` renders a `<video>` element routed through the existing
   `WebAudioEngine` via one post-unlock `createMediaElementSource`, with clean audio↔video
-  transitions. It consumes `PlaybackStateDto`, but it computes the expected position from the
-  local wall clock rather than a server-synchronized offset — so it is a video surface, not the
-  authoritative synchronized path Slice 4 specifies.
+  transitions. It consumes `PlaybackStateDto` and derives its expected position from the §5.3
+  server-synchronized `serverNow` (Ping/Pong median offset), not the raw local wall clock. Slice 4
+  then made this part of the authoritative path: room playback drives the stage's library stems and
+  the video surface, and the stage calibrates once against its own audio clock.
 - **Tests.** Unit coverage for video-id validation, yt-dlp JSON/progress parsing, argument arrays,
   coalescing, worker transitions, and temp cleanup; integration coverage with a deterministic
   `FakeYouTubeService` (search, dedup, SignalR progress/`SongReady`, 206 range serving); Vitest for
@@ -192,28 +195,96 @@ machine-specific development paths, the CI requires-Docker gate, and DTO field-p
 tests. The verdict and open backlog are in
 [`docs/review/slice-4-review.md`](review/slice-4-review.md).
 
-### 2.5 What is NOT built yet
+### 2.5 Slice 4 — playback authority, clock sync, authoritative stage playback
+
+Slice 4 answered: *who is allowed to move playback, and how does every screen converge on the same position?*
+
+- **Single writer.** `PlaybackAuthority` (`Features/PlaybackAuthority.cs`) is a `BackgroundService`
+  and the only component that drives room playback. It owns a bounded `Channel` of capacity **256**
+  (`BoundedChannelFullMode.Wait`, single reader) whose envelope is a `RoomCommand` plus a
+  `TaskCompletionSource`. Hub methods — `StartPlayback`, `PausePlayback`, `ResumePlayback`,
+  `SkipSong`, `RestartSong`, `ReportSongEnded`, and `SetGuideVocalVolume` — await that completion,
+  so a phone observes the persisted-then-broadcast state on return (**read-your-writes**). The
+  consume loop applies every transition under the room `CommandLock`, persists before broadcasting
+  (§5.1 rule 6). Enqueue/move stay on their direct path; removal is authority-owned because
+  deleting the current item also resets playback.
+- **Authority-owned count-in.** Start puts the room in `Countdown` with an anchor of "now" and four
+  remaining beats. The authority broadcasts `CountdownTicked(queueItemId, remainingBeats, beatMs:
+  500)` per beat (4 → 1) over a 2 s window, then auto-transitions to `Playing` with a **fresh**
+  `PlaybackStartedAtUtc` anchor. `Features/PlaybackTiming.cs` pins `CountdownBeats = 4` and
+  `CountdownBeatMs = 500`. Pause during the count-in parks at `Paused`/position 0; Resume starts a
+  fresh anchor; Skip cancels and advances; Restart re-enters the count-in; a duplicate Start is
+  ignored. The beat is deliberately fixed: authoritative per-song tempo lives in `lyrics.json`, and
+  the stage renders the precise dots itself (§5.1 rule 5), while phones get a compact ring.
+- **Duration watchdog.** A 100 ms tick considers only `Playing` rooms and fires at
+  `PlaybackStartedAtUtc + Song.DurationMs + 5 s`, advancing through the **same guarded end path** as
+  a stage report.
+- **Duplicate-end idempotency.** One shared guard under `CommandLock` — `queueItemId ==
+  CurrentQueueItemId` — means a duplicate stage report, or the watchdog firing after that report,
+  can never double-advance the queue.
+- **Clock sync.** `StageHub.Ping` echoes `t1` with `t2` stamped at the server, and
+  `lib/signalr/clockSync.ts` keeps the last **8 samples** and publishes the **median** offset plus
+  `serverNow`. The stage uses that estimate for video position and for joining mid-song.
+- **Authoritative stage playback.** `features/stage/playbackController.ts` (`StagePlaybackController`
+  + `useStagePlayback`) subscribes to `PlaybackChanged`, loads library stems and lyrics through
+  `songMedia.ts` (`/api/songs/{id}/instrumental|vocals|lyrics`, with GUID→slug catalog mapping for
+  the no-DB fallback), and performs the §5.3 Layer-2 start alignment **once**:
+  `anchorCorrection = expectedMs − audioPositionMs`. Audio is ground truth and is never re-slaved
+  mid-song; a stage joining mid-song aligns to the authoritative position. Pause/resume/skip/restart
+  and ended are steered from the room, with deduped `reportSongEnded`.
+- **Stage UI.** Room playback takes over `StageShell`'s library mode; the local `DemoTrackPicker`
+  remains an explicit fallback when room playback is idle or absent, so `npm run dev` and
+  database-less Playwright still work. The guide-vocal slider routes through the hub
+  (`SetGuideVocalVolume`) when a room is present. New test attributes `data-room`, `data-song-id`,
+  `data-queue-item-id`, and a unified `data-phase` (including `paused`) make the takeover
+  assertable. `WebAudioEngine.pause()` preserves the media position, reuses decoded buffers, and
+  does not fire `onEnded`.
+- **Phone remote.** `CountdownTicked` feeds `roomState.applyCountdownTick`, which renders an SVG
+  countdown ring in `PlaybackControls.tsx` (§5.1 rule 5 mini progress ring). `useStageRoom` exposes
+  `setGuideVocalVolume` and a test-only `window.__karaokayClockBiasMs` bias.
+- **Cold-start rehydration.** `Features/RoomRehydrator.cs` plus the pure
+  `Features/RoomStateMapper.cs` run in `Program.ApplyDatabaseStartupAsync` after demo seeding when a
+  database is configured. One `AsNoTracking` query loads open rooms with their ordered queue and
+  joined songs; positions are re-densified, playback fields and anchors restored (a `Playing` room
+  keeps flowing), a dangling cursor resets to `Idle`, and stale duplicate `Playing` rows are
+  demoted. `PartyRoom.QueueSequence` is now persisted with **write-ahead minting** (the sequence is
+  minted before the row is written) through migration `20261125160000_AddRoomQueueSequence`
+  (`Rooms.QueueSequence bigint NOT NULL DEFAULT 0`) and restored via
+  `RoomRegistry.RestoreQueueSequence`. Without a connection string rehydration is a no-op, so
+  no-database mode is unchanged.
+- **Testability.** `QueueService` takes an injectable `TimeProvider` so tests can drive anchors;
+  `PlaybackAuthority` has the same internal seam plus a tick-interval override. `QueueOrdering` also
+  protects the count-in cursor item from moves.
+- **Tests.** The final tree has **188 unit + 11 architecture + 31 integration passing**, with **28
+  Docker-gated integration tests skipped locally** (CI runs them). Five Slice 4 integration tests
+  cover the two-phase Start broadcast and tick contract, ±30 ms pause/resume, the watchdog,
+  duplicate-end, and cold-restart rehydration. Vitest is **120 tests in 15 files**; Playwright is
+  **11 tests in 7 spec files**, including `e2e/playback-authority.spec.ts` (phone-driven
+  Start/Pause/Resume/Skip converge on the stage; a mid-song stage join aligns under a +40 ms clock
+  bias standing in for RTT/2) and a +300 ms `injectDrift` hard-nudge assertion in
+  `e2e/youtube.spec.ts`.
+
+The implementation choices and the two blueprint filename corrections are recorded in
+[ADR-008](adr/008-slice-4-playback-authority-decisions.md); the completion follow-up is in the
+[Slice 4 review](review/slice-4-review.md).
+
+### 2.6 What is NOT built yet
 
 Do not look for these:
 
-- **Authoritative playback.** The room has a small playback subset, but there is no single-writer
-  `PlaybackAuthority` and no watchdog. The stage still plays local demo audio for library songs.
-  (Slice 4, open.) The §5.3 wall-clock layer is no longer missing: `Ping`/`Pong`, the 8-sample
-  median offset filter, and the server-now video correction landed in the review follow-up; audio
-  start-alignment calibration and the phone countdown rings remain with the rest of Slice 4.
-- **Stage library playback controlled by phones.** Phone Start/Pause/Skip changes room state; the
-  YouTube `<video>` path consumes room state, but library audio still comes from the local
-  `DemoTrackPicker` (Slice 3 review M5, still open).
-- **Room lifecycle and cold-start rehydration.** Rooms are never closed or garbage-collected
-  (Slice 3 review M3), and cold restarts do not rehydrate rooms from Postgres (Slice 3 review M4,
-  still open).
-- **Stage authentication.** The stage role is self-declared in `JoinRequest` (Slice 3 review M2).
+- **Room lifecycle and garbage collection.** Rooms are never closed or garbage-collected (Slice 3
+  review M3), so every `/stage` load consumes a code from the finite 279,841-code space. Cold-start
+  rehydration now exists (Slice 4), but room GC does not.
+- **Stage authentication.** The stage role is self-declared in `JoinRequest` (Slice 3 review M2);
+  any guest with the code can claim it until a stage secret or one-stage-per-room claim lands.
+- **AwaitingDownload auto-start wiring.** The stage renders the phase and the queue, but a fresh
+  `SongReady`/AwaitingDownload transition does not yet auto-start playback (§5.1 rule 3 wiring).
 - **Azure deployment.** No Bicep files, deploy workflow, or live URL.
 - **Android anything.** No `net10.0-android` app, C++ Oboe engine, or SkiaSharp renderer.
-- **A browser API client for library stage audio.** The stage video path now fetches
-  `/api/songs/{id}/video`, but library audio still loads `public/demo-tracks/` as static files.
 
-YouTube ingestion is no longer on this list — see §2.4.
+Authoritative playback, phone-driven stage library audio, cold-start rehydration, and the browser
+API client for library audio are no longer on this list — see §2.5. YouTube ingestion is no longer
+on it either — see §2.4.
 
 `src/clients/web/src/features/remote/` is no longer a placeholder: it is the phone remote.
 
@@ -241,7 +312,7 @@ karaokay/
 │   │   ├── slice-1-walkthrough.md
 │   │   ├── slice-2-walkthrough.md
 │   │   └── slice-3-walkthrough.md
-│   └── review/{slice-1,slice-2,slice-3}-review.md
+│   └── review/{slice-1,slice-2,slice-3,slice-4}-review.md
 └── src/
     ├── apps/  core/  tools/  clients/web/  tests/
 ```
@@ -290,7 +361,7 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 ### 3.8 `docs/` — the written memory of the project
 
 - **`ARCHITECTURE.md`** — the master blueprint: constraints, system diagram, folder layout, the `lyrics.json` contract, EF Core entities, SignalR contracts, the room state machine, sweep-fill math, the Android audio plan, and all eight slices with Definition-of-Done prompts.
-- **`adr/`** — seven Architecture Decision Records:
+- **`adr/`** — eight Architecture Decision Records:
 
 | ADR | Decision in one line |
 |---|---|
@@ -301,11 +372,16 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 | [005](adr/005-slice-1-blueprint-reconciliations.md) | Correct the blueprint after Slice 1: 23-letter codes / 279,841 combinations, reflection-based rules, code-level validation. |
 | [006](adr/006-line-wrapping-ownership.md) | The renderer owns glyph-measured wrapping; the importer stores only explicit line breaks. |
 | [007](adr/007-slice-4-5-deliverable-ordering.md) | Slice 5 YouTube ingestion landed early in a commit labeled Slice 4; the original Slice 4 scope stays open. |
+| [008](adr/008-slice-4-playback-authority-decisions.md) | Slice 4 completion: bounded command-channel authority, fixed 500 ms count-in beat, persisted queue sequence, injectable clock, and blueprint filename reconciliation. |
 
 - **`learning/slice-1-walkthrough.md`** — a long beginner guide to Slice 1: MIDI, tick math, lyric encoding, FFmpeg mixing, LUFS, and the tests.
 - **`learning/slice-2-walkthrough.md`** — the preserved "Project State After Slice 2" snapshot (commit `ebc3e95`), kept as a learning walkthrough with links fixed for its new home.
 - **`learning/slice-3-walkthrough.md`** — the deep Slice 3 guide: SignalR hubs and groups, the room registry and queue engine, EF Core persistence, the M1 reorder bug, the phone remote, and the review backlog.
-- **`review/slice-1-review.md`**, **`review/slice-2-review.md`**, **`review/slice-3-review.md`**, **`review/slice-4-review.md`** — internal reviews with verdicts, fixed defects, and carry-forward backlogs. The Slice 3 record fixes M1 and schedules M2–M5; the Slice 4 record resolves the scope mislabel, records the hardening that landed in its follow-up, and carries the open backlog.
+- **`review/slice-1-review.md`**, **`review/slice-2-review.md`**, **`review/slice-3-review.md`**,
+  **`review/slice-4-review.md`** — internal reviews with verdicts, fixed defects, and carry-forward
+  backlogs. The Slice 3 record fixes M1 and schedules M2–M5 (M4/M5 since closed by Slice 4); the
+  Slice 4 record resolves the scope mislabel, records the hardening that landed in its follow-ups,
+  and records the completion of the authority, watchdog, rehydration, and stage wiring.
 
 ---
 
@@ -341,12 +417,13 @@ src/
 The entry point wires the slice together:
 
 1. Register the media library, song catalog, room registry, room service, queue service, YouTube
-   ingestion, SignalR, OpenAPI, CORS, and — when `ConnectionStrings:Karaokay` exists — EF Core with
-   Npgsql.
+   ingestion, the `PlaybackAuthority` hosted service, the room rehydrator, SignalR, OpenAPI, CORS,
+   and — when `ConnectionStrings:Karaokay` exists — EF Core with Npgsql.
 2. Map `/healthz` through `MapHealthChecks` (plain-text probe output; the Slice 2 JSON body was
    replaced in Slice 3 — a review nit), `/openapi`, the song/media/room endpoints, and
    `/hubs/stage`.
-3. When a database is configured, apply migrations and seed the demo songs before serving.
+3. When a database is configured, apply migrations, seed the demo songs, and rehydrate open rooms
+   into the registry before serving.
 
 **Dependency injection** (DI) means a class asks for what it needs as constructor parameters; a container builds and shares instances. `AddSingleton` means one shared instance per process, which suits the room registry, queue service, and library scan cache.
 
@@ -399,8 +476,11 @@ fresh session token and sends a full `JoinedRoom` snapshot; `OnDisconnectedAsync
 `ReportSongEnded`/`UpdateStageCapabilities` on `Role == "stage"`.
 
 That stage gate is only as strong as the role the client claims in `JoinRequest` (review M2, to be
-fixed before the public demo). `ReportSongEnded` is idempotent: anything but the current queue item
-is ignored, so a duplicate stage report cannot double-advance.
+fixed before the public demo). The playback methods do not mutate room state directly: each builds a
+`RoomCommand` and awaits `PlaybackAuthority`, which persists and broadcasts before completing the
+caller. `ReportSongEnded` is idempotent in the authority: anything but the current queue item is
+ignored under the command lock, and the watchdog shares the same guard, so a duplicate stage report
+cannot double-advance.
 
 #### `Features/RoomRegistry.cs` and `RoomService.cs`
 
@@ -420,9 +500,20 @@ are dense positions plus states; `RenumberLocked` keeps zero-based ordering afte
 `QueueOrdering` holds the pure cursor rules fixed in the Slice 3 review: only upcoming rows may
 move, a target above the playing row clamps to the first upcoming slot, and advance selects the
 next playable row after the cursor with a fallback to a playable row behind it. This prevents a
-guest reorder from skipping a song or forcing `Idle` while songs remain. The service also supports
-start/pause/resume/skip/restart and an idempotent end report; the full `PlaybackAuthority` and
-watchdog are Slice 4, while the §5.3 wall-clock layer now exists for the web stage video path.
+guest reorder from skipping a song or forcing `Idle` while songs remain. It also protects the
+count-in cursor item. Playback transitions no longer live here: they are applied by
+`PlaybackAuthority` through the command channel, while `QueueService` supplies the shared
+persist-then-broadcast transition bodies and an injectable `TimeProvider` for position anchors.
+
+#### `Features/PlaybackAuthority.cs` and `PlaybackTiming.cs`
+
+The single writer for room playback. Hub playback calls enqueue a `RoomCommand` with a
+`TaskCompletionSource` on a bounded channel (256, wait, single reader); the consume loop takes the
+room command lock, persists, broadcasts, and completes the caller. The same service owns the 2 s
+authority count-in (`PlaybackTiming`, four 500 ms beats with `CountdownTicked`) and the 100 ms
+duration watchdog, which ends a stalled `Playing` room at `PlaybackStartedAtUtc + DurationMs + 5 s`
+through the same guarded advance path as a stage report. One `queueItemId == CurrentQueueItemId`
+guard makes stage reports and watchdog firings idempotent together.
 
 #### `Features/SongCatalog.cs` and EF Core persistence
 
@@ -433,8 +524,12 @@ Entities (`Song`, `PartyRoom`, `QueueItem`) and Npgsql migrations live in
 `DemoSongSeeder` syncs the scanned demo library into the songs table at startup (insert missing
 rows, update existing ones, then save), rather than seeding only an empty database.
 
-Persistence is currently write-only: the database is updated, but a cold restart does not rehydrate
-rooms into `RoomRegistry` (review M4, assigned to Slice 4 or earlier).
+Persistence is no longer write-only: `RoomRehydrator` rebuilds open rooms from Postgres at startup
+(one `AsNoTracking` query with the ordered queue and joined songs), and `RoomStateMapper` restores
+positions, playback anchors, guide-vocal level, and the persisted `PartyRoom.QueueSequence` that
+write-ahead minting keeps monotonic across restarts. A dangling cursor becomes `Idle`, and stale
+duplicate `Playing` rows are demoted. Migration `AddRoomQueueSequence` adds the stored sequence
+column; without a connection string rehydration is a no-op.
 
 #### `Karaokay.AppHost` and `Karaokay.ServiceDefaults`
 
@@ -463,8 +558,8 @@ Karaokay.Infrastructure ──▶ Application, Contracts
 - **`SongDtos.cs`** — HTTP response shapes such as `SongSummaryDto`.
 - **`Hubs/`** — the SignalR contract: `IStageHub` (client→server), `IStageHubClient`
   (server→client), shared DTO records (`RoomSnapshot`, `QueueDelta`, `PlaybackStateDto`,
-  `HubErrorDto`), the `QueueItemState`/`PlaybackStatus` wire enums, and `RoomCommand` reserved for
-  Slice 4's authority.
+  `HubErrorDto`), the `QueueItemState`/`PlaybackStatus` wire enums, and `RoomCommand` — now the
+  payload carried on `PlaybackAuthority`'s command channel.
 
 Why one serializer? The generator, importer, golden tests, and `verify` all compare bytes. Separate JSON options would create false failures and hide real ones.
 
@@ -484,7 +579,8 @@ and camelCase name set. Name-only parity remains for field types and optionality
 
 `Persistence/KaraokayDbContext.cs`, entity configurations, and the Npgsql migrations implement the
 Slice 3 storage path. The provider-specific filtered unique index on `Song.VideoId` is codified in
-the model; the DB is the cold-restart target even though rehydration is not wired yet (M4).
+the model, and the DB is now the cold-restart target: Slice 4's rehydrator rebuilds rooms and their
+queue sequence from it at startup.
 
 `MediaIngest/` contains the Slice 1 adapters:
 
@@ -539,7 +635,10 @@ first upcoming row's up-button. That mirrors the server rule (review M1): the pl
 ended history are the cursor and cannot be reordered.
 
 The room code is not persisted client-side yet, so a page reload requires joining again (review
-minor #3). Playback controls change room state that the stage does not render yet (review M5).
+minor #3). Playback controls change authoritative room state, and the stage now renders it: the
+phone's Start/Pause/Resume/Skip reach the same audio the stage plays. During the authority count-in,
+`PlaybackControls` renders the SVG countdown ring fed by `CountdownTicked`; the guide-vocal slider
+routes through `SetGuideVocalVolume` when a room is present.
 
 #### `StageShell.tsx` — the phase machine
 
@@ -551,14 +650,31 @@ picking ──pick──▶ countdown ──lead-in ends + audio ready──▶ 
 
 On a pick, `engine.loadSong()` fetches and decodes both stems while a countdown animation runs from the lead-in gap. `Promise.all` waits for both, then `engine.start(leadInOffsetMs)` starts both sources and seeks past the lead-in so audio and lyrics agree. When the source ends, the phase becomes `ended` and the picker returns.
 
-Separately from audio, the stage now calls `POST /api/rooms` on load, shows the returned code and QR
-in a corner overlay, connects to the hub as `"stage"`, and renders the shared queue. The stage's
-local picker still drives library audio; wiring that audio to room playback is Slice 4 (review M5).
-The YouTube video surface added in `324da8a` consumes room playback and now derives its expected
-position from the §5.3 Ping/Pong wall-clock offset (`serverNow`); authoritative library-audio start
-alignment and phone countdown rings remain Slice 4 work.
+Separately from audio, the stage calls `POST /api/rooms` on load, shows the returned code and QR in a
+corner overlay, connects to the hub as `"stage"`, and renders the shared queue. When a room is
+present, **room playback takes over**: `useStagePlayback` loads the current library song through the
+media API, aligns once to the authoritative anchor, and steers pause/resume/skip/restart from the
+hub. The local `DemoTrackPicker` remains an explicit fallback when room playback is idle or absent,
+which keeps the database-less dev and Playwright paths working. The unified `data-phase` attribute
+covers the room phases, including `paused`. Guide-vocal volume routes through the hub when a room is
+present. The authoritative layer is `playbackController.ts` (next section).
 
 **Why the gesture gate?** Browsers block audio until the user interacts, so a page cannot surprise a visitor with sound. An `AudioContext` created before a click starts suspended. The stage shows **"Click to Enable Stage Audio"**; only that click calls `engine.unlock()`. Nothing in the playback path — no source creation, decode, or media-element routing — happens before it. The Playwright audio-gate test asserts exactly that through `window.__karaokayAudioLog`.
+
+#### `features/stage/playbackController.ts` and `songMedia.ts` — authoritative playback on the stage
+
+`StagePlaybackController` (bound with `useStagePlayback`) subscribes to `PlaybackChanged` and turns
+room state into stage audio. It loads the song's stems and `lyrics.json` through `songMedia.ts`
+(`/api/songs/{id}/instrumental|vocals|lyrics`), mapping demo GUIDs back to slugs for the no-DB
+catalog. Loading stays gesture-gated: nothing is fetched or decoded before the audio unlock.
+
+The §5.3 Layer-2 calibration happens **once** per song:
+`anchorCorrectionMs = expectedMs − audioPositionMs`, where `expectedMs` comes from the playback
+anchor plus the synchronized server clock. Audio is ground truth: the stage does not re-slave the
+audio to the server mid-song. A stage that joins mid-song applies the same one-time alignment to
+the authoritative position, so it starts at the right lyric line. Pause/resume/skip/restart and
+song-ended are steered from `PlaybackChanged`; `reportSongEnded` is deduped per queue item. The
+`<video>` surface remains the video-mode path, while this controller owns library audio.
 
 #### `WebAudioEngine.ts` — two stems, three buses
 
@@ -572,7 +688,7 @@ vocals buffer ────────▶ guide GainNode ───────�
 
 A **GainNode** is a volume control. Three buses allow independent instrumental, guide-vocal, and master volume. `setGuideVocalVolume()` ramps the guide bus over 45 ms, so there is no click or dropout and sources are never recreated.
 
-`unlock()` is idempotent and must be called from a user gesture; on failure it rolls back so the next click retries. A **test clock** (`stageTestClock`) overrides `positionMs()`, letting Playwright pin an exact millisecond and screenshot the canvas deterministically. `positionMs()` otherwise reads `AudioContext.currentTime` — the audio hardware clock — because what the user hears is the ground truth.
+`unlock()` is idempotent and must be called from a user gesture; on failure it rolls back so the next click retries. `pause()` stops both sources while preserving the media position, reuses the decoded buffers, and does **not** fire `onEnded`, so a room pause is not mistaken for a song end. A **test clock** (`stageTestClock`) overrides `positionMs()`, letting Playwright pin an exact millisecond and screenshot the canvas deterministically. `positionMs()` otherwise reads `AudioContext.currentTime` — the audio hardware clock — because what the user hears is the ground truth.
 
 Slice 2 does **not** use `createMediaElementSource` or `<audio>`. The early Slice 5 video surface
 adds one post-unlock `createMediaElementSource` path for `<video>`; tests still assert that the
@@ -628,13 +744,15 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 | `canvas-pixels.spec.ts` | At 0, 1,250, and 9,000 ms the canvas produces stable, distinct frames with visible glyph pixels, driven by the test clock. |
 | `gain-slider.spec.ts` | Moving guide vocals to 0 and 1 changes the gain bus without recreating sources; crossfades are ≤ 50 ms. |
 | `rooms.spec.ts` | Two browser contexts (stage + phone): the stage auto-creates a room and shows a valid code, the phone joins, enqueue/reorder/remove propagate to both, and a phone reload converges from a fresh snapshot. |
+| `playback-authority.spec.ts` | Phone Start/Pause/Resume/Skip converge on the stage's audio; a mid-song stage join aligns under a +40 ms clock bias standing in for RTT/2. |
+| `youtube.spec.ts` | The deterministic yt-dlp shim drives search/download/progress into the queue, and a +300 ms `injectDrift` on the video surface is hard-nudged back within the §5.3 threshold. |
 
 `playwright.config.ts` serves the built `dist/` on port 4173 and launches with `--mute-audio` and `--autoplay-policy=user-gesture-required`, so the gate is enforced even in tests.
 
 ### 4.5 `src/tests/` — the safety net
 
-- **`Karaokay.UnitTests` (164 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, and the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, and Start/Pause/Resume/Skip/Idle transitions.
-- **`Karaokay.IntegrationTests` (31 passing; 23 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, and stage-role rejection. The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path — a blind spot the Slice 4 review records. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
+- **`Karaokay.UnitTests` (188 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, and the count-in interactions; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, and Start/Pause/Resume/Skip/Idle transitions.
+- **`Karaokay.IntegrationTests` (31 passing; 28 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, stage-role rejection, and five Slice 4 tests (two-phase Start broadcast and tick contract, ±30 ms pause/resume, watchdog, duplicate-end, cold-restart rehydration). The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
 - **`Karaokay.ArchitectureTests` (11 tests).** These enforce layering. **Reflection** is .NET's ability to inspect assemblies and types at runtime. The tests use `Assembly.GetReferencedAssemblies()` to assert, for example, that `Contracts` never references Domain/Application/Infrastructure/DryWetMidi/CliWrap/EF Core, that `Application` never references `Infrastructure`, that CLI tools never reference the apps, and that `Domain` is a leaf. **Positive controls** assert the probe really sees a known reference, so a broken helper cannot make every rule pass vacuously. The source comment explains why reflection replaced `NetArchTest.Rules`, which misreported dependencies on .NET 10.
 
 ---
@@ -700,20 +818,28 @@ The three songs are a test harness, not a library: one has explicit phrase marke
         │                               │  lock → mutate → persist     │
         │                               │  EF Core ──▶ PostgreSQL      │
         │◀──── QueueChanged {seq} ──────┤──── QueueChanged ───────────▶│
-        │ Start / Pause / Skip ────────▶│  playback subset (Slice 3)   │
+        │ Start / Pause / Skip ────────▶│  PlaybackAuthority channel  │
+        │                               │  lock → persist → broadcast  │
         │◀──── PlaybackChanged ─────────┤──── PlaybackChanged ────────▶│
 ```
 
 1. **Join.** A phone or stage calls `JoinRoom`; the hub binds the connection to a `RoomState` in the singleton registry, adds it to the SignalR group, and returns a full snapshot plus a session token. Rejoin uses the same path.
 2. **Queue.** Enqueue/move/remove take the room command lock, mutate the in-memory queue, persist through EF Core (when configured), then broadcast a `QueueChanged` delta carrying the next monotonic sequence. A client that sees a gap re-joins for a snapshot rather than replaying deltas.
-3. **Playback subset.** Start/Pause/Resume/Skip/Restart plus the idempotent `ReportSongEnded` update room state and broadcast `PlaybackChanged`; the full single-writer `PlaybackAuthority` and watchdog are Slice 4, while the §5.3 wall-clock offset now drives the web stage video path. Reordering is forward-only: `Playing`/`Ended` rows are the cursor and cannot be moved, which is the M1 fix from the Slice 3 review.
-4. **Not connected yet.** The stage renders the room queue but still plays local demo audio for
-   library songs; phone controls do not drive stage sound (review M5). Persistence is write-only
-   until rooms are rehydrated (review M4).
+3. **Playback.** Start/Pause/Resume/Skip/Restart/`ReportSongEnded`/`SetGuideVocalVolume` enqueue a
+   `RoomCommand` on the authority's bounded channel and await completion; the single-writer
+   `PlaybackAuthority` applies each transition under the room lock, persists, and broadcasts
+   `PlaybackChanged` (or `CountdownTicked` during the count-in). The watchdog ends a stalled
+   `Playing` room through the same guarded path. Reordering remains forward-only: `Playing`/`Ended`
+   rows are the cursor and cannot be moved, which is the M1 fix from the Slice 3 review.
+4. **Stage convergence.** The stage loads the current song's stems/lyrics and aligns once to the
+   authoritative anchor, then keeps its own audio clock as ground truth; a mid-song join aligns to
+   the authoritative position. Phone Start/Pause/Resume/Skip therefore drive stage sound. Still not
+   connected: an `AwaitingDownload` queue item does not auto-start playback when it becomes ready
+   (§5.1 rule 3), and the stage role remains client-declared (review M2).
 5. **YouTube path.** A guest searches and enqueues through `/api/youtube` (the guest UI is REST-only);
-   the worker downloads, broadcasts progress, and marks the queue row `Ready`. The stage can render
-   the resulting video through its `<video>` surface. Video position is now steered by the §5.3
-   server-clock offset; the `PlaybackAuthority`/watchdog layer remains Slice 4.
+   the worker downloads, broadcasts progress, and marks the queue row `Ready`. The stage renders the
+   resulting video through its `<video>` surface, steered by the §5.3 server-clock offset, and the
+   same `PlaybackAuthority` owns the room's playback state for video songs too.
 
 ---
 
@@ -729,12 +855,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (~206 passing; 23 Docker-gated skips locally)
+dotnet test           # run unit, integration, and architecture tests (~230 passing; 28 Docker-gated skips locally)
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **206 passed / 23 skipped** on a Docker-less machine; the two DB-less YouTube contract edges now run locally, and CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **230 passed / 28 skipped** on a Docker-less machine; the two DB-less YouTube contract edges now run locally, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a
@@ -760,7 +886,7 @@ From `src/clients/web`:
 ```bash
 npm ci                    # install exact versions from package-lock.json
 npm run dev               # Vite dev server with hot reload at http://localhost:5173
-npm test                  # Vitest once (92 tests)
+npm test                  # Vitest once (120 tests)
 npm run build             # type-check with tsc, then bundle into dist/
 npm run test:e2e          # build, serve dist/, run Playwright
 npm run test:e2e:ci       # Playwright against an existing build
@@ -817,56 +943,68 @@ There is no deployment job yet; Azure arrives in Slice 6.
 
 ### Slice 4 — playback authority, clock sync, and browser video mode
 
-**Status: PARTIALLY COMPLETE / OPEN.** As of `324da8a`, the commit labeled "slice-4" delivered the
-documented Slice 5 instead. The §5.3 Ping/Pong offset filter has since landed (see the checklist
-below); the rest of the original definition is unchanged. See
-[ADR-007](adr/007-slice-4-5-deliverable-ordering.md) for the ordering decision.
+**Status: COMPLETE (2026-11-25).** Commit `324da8a` was labeled "slice-4" but delivered the
+documented Slice 5; [ADR-007](adr/007-slice-4-5-deliverable-ordering.md) kept the original Slice 4
+scope open, and the documented work landed afterwards. The implementation choices are recorded in
+[ADR-008](adr/008-slice-4-playback-authority-decisions.md).
 
-**Exists today**
+**What shipped**
 
-- A stage `<video>` surface (`useStageVideo.ts`, `videoSync.ts`) routed through the Web Audio graph,
-  with hard-seek/soft-nudge corrections.
-- A §5.3 wall-clock layer: `StageHub.Ping` echoes `t1` with `t2` stamped at entry, `clockSync.ts`
-  keeps the last 8 samples and publishes the median offset, and `useStageVideo` computes
-  `expectedMs` from that server-now value.
-- A video consumer of `PlaybackStateDto`, live download progress, and the guest YouTube UI.
+- **Single writer.** `Features/PlaybackAuthority.cs` is a `BackgroundService` consuming a bounded
+  `Channel` (capacity 256, wait, single reader) of `RoomCommand` + `TaskCompletionSource` envelopes.
+  Hub playback methods await persist→broadcast completion (read-your-writes); every transition runs
+  under the room command lock.
+- **Count-in.** `Features/PlaybackTiming.cs` pins four 500 ms beats; `CountdownTicked` runs 4 → 1,
+  then `Playing` starts with a fresh anchor. Pause during the count-in parks at position 0; Skip
+  cancels; Restart re-enters; duplicate Start is ignored.
+- **Watchdog and idempotency.** A 100 ms tick ends a `Playing` room at `PlaybackStartedAtUtc +
+  DurationMs + 5 s` through the same guarded end path as a stage report. One
+  `queueItemId == CurrentQueueItemId` guard makes duplicate reports and watchdog firings
+  non-double-advancing.
+- **Clock sync.** `StageHub.Ping` plus `lib/signalr/clockSync.ts`: 8-sample median offset and
+  `serverNow`.
+- **Authoritative stage playback.** `features/stage/playbackController.ts` + `songMedia.ts` load
+  stems/lyrics, align once with `anchorCorrection = expectedMs − audioPositionMs`, keep audio as
+  ground truth, and steer pause/resume/skip/restart/ended. Room playback takes over `StageShell`;
+  the local picker is an explicit idle fallback. `WebAudioEngine.pause()` preserves position.
+- **Phone count-in ring.** `CountdownTicked` feeds `roomState.applyCountdownTick` and the SVG ring in
+  `PlaybackControls.tsx`; the guide-vocal slider routes through `SetGuideVocalVolume`.
+- **Cold-start rehydration.** `Features/RoomRehydrator.cs` + `Features/RoomStateMapper.cs` restore
+  open rooms, re-densify positions, reset a dangling cursor to `Idle`, and demote stale duplicate
+  `Playing` rows. `PartyRoom.QueueSequence` is persisted with write-ahead minting
+  (`20261125160000_AddRoomQueueSequence`) and restored via `RoomRegistry.RestoreQueueSequence`.
+  No database means no-op, so no-DB mode is unchanged.
 
-**Checklist (checked items landed in the review follow-up; the rest is owed next)**
+**Definition-of-done checklist**
 
-- [ ] `PlaybackAuthority` single-writer hosted service + duration watchdog.
+- [x] `PlaybackAuthority` single-writer hosted service + duration watchdog. **Landed in
+      `Features/PlaybackAuthority.cs`; the 100 ms watchdog shares the guarded end path.**
 - [x] `Ping`/`Pong` clock sync and the 8-sample median client offset filter, applied to the web
       stage video path (`StageHub.Ping` stamps `t2` at entry; `useStageVideo` passes `serverNow` into
-      `expectedPositionMs`). **Landed in the review follow-up.** Still owed within §5.3: the
-      authoritative stage audio start-alignment calibration and the phone mini progress ring
-      (`CountdownTicked`), which depend on the remaining authority/stage-playback work.
-- [ ] Authoritative stage playback wiring (Slice 3 review M5); library stage audio still comes from
-      `DemoTrackPicker`.
-- [ ] Cold-start rehydration of playing rooms from Postgres (Slice 3 review M4).
-- [ ] Duplicate `ReportSongEnded` idempotency against the watchdog race. The hub currently ignores a
-      non-current queue-item id, but the authority/watchdog pair the rule describes does not exist.
-- [ ] The Slice 4 integration/Playwright matrix below (authoritative position, ±300 ms
-      self-correction, watchdog, duplicate-end protection).
+      `expectedPositionMs`). **Landed; the authoritative stage audio start alignment and the phone
+      countdown ring (`CountdownTicked`) also landed in `playbackController.ts` and
+      `PlaybackControls.tsx`.**
+- [x] Authoritative stage playback wiring (Slice 3 review M5); room playback now drives stage
+      library audio, with `DemoTrackPicker` only as an idle fallback. **Landed in
+      `playbackController.ts` / `StageShell.tsx`; M5 closed.**
+- [x] Cold-start rehydration of playing rooms from Postgres (Slice 3 review M4). **Landed in
+      `RoomRehydrator.cs` + `RoomStateMapper.cs`, invoked from `ApplyDatabaseStartupAsync`; M4
+      closed.**
+- [x] Duplicate `ReportSongEnded` idempotency against the watchdog race. **Landed: one shared
+      `queueItemId == CurrentQueueItemId` guard under the command lock.**
+- [x] The Slice 4 integration/Playwright matrix below (authoritative position, ±300 ms
+      self-correction, watchdog, duplicate-end protection). **Landed: five Docker-gated integration
+      tests and `e2e/playback-authority.spec.ts`; the video drift assertion lives in
+      `e2e/youtube.spec.ts`.**
 
-Slice 3 has a queue and a small playback state machine. Slice 4 makes playback authoritative and
-synchronized, and closes the gap between what phones control and what the stage renders.
+**Original scope, for the record**
 
-- **`PlaybackAuthority`.** A single-writer hosted service consuming `Channel<RoomCommand>` (the type
-  already exists in Contracts), owning every playback transition, persisting before broadcast, and
-  running the duration watchdog. `ReportSongEnded` stays idempotent against both a stage report and
-  the watchdog.
-- **Clock sync.** `Ping/Pong` over the hub, an 8-sample median offset filter on clients, and
-  `PlaybackChanged(PositionMs, TimeAnchorUtc)` anchors. The stage calibrates once against its audio
-  clock; video mode uses the hard/soft nudge thresholds from §5.3.
-- **Browser video mode.** A `<video>` element routed through `AudioContext.createMediaElementSource`
-  into the same master and mic buses, plus the AwaitingDownload/SongEnded/Idle interstitials.
-- **Stage playback wiring (review M5).** The stage must render room playback instead of its local
-  `DemoTrackPicker`, or the phone controls should be hidden behind a flag until it does.
-- **Cold-start rehydration (review M4).** Rebuild `RoomState` from Postgres on startup or first join,
-  including `QueueSequence` and playback anchors. This is the natural owner because the authority
-  already needs the persisted anchor; if deferred, schedule it before the Slice 6 demo.
-- **Testing.** Integration: Start → `PlaybackChanged(Playing, 0, now)`, pause/resume within ±30 ms,
-  skip advances, the watchdog fires after `duration + 5 s`, and a duplicate end report cannot
-  double-advance. Playwright: synthetic clocks prove audio alignment within ±150 ms.
+Slice 3 had a queue and a small playback state machine. Slice 4 made playback authoritative and
+synchronized, and closed the gap between what phones control and what the stage renders:
+single-writer transitions persisted before broadcast; `Ping`/`Pong` with a median offset; one-time
+audio-anchor calibration; a duration watchdog; a duplicate-end guard; and rehydration of rooms,
+queue sequence, and anchors from Postgres. What remains from the original planning is not Slice 4
+scope but the Slice 3 review's M2/M3 and the ADR-005 governance gap — see the next section.
 
 ### Carried forward from the Slice 3 review
 
@@ -878,16 +1016,19 @@ These are scheduled, not optional polish:
 - **M3 — rooms are never collected.** Every `/stage` load creates a room with no GC, close path, or
   rate limit, consuming the finite 279,841-code space. Pair with room-GC work (blueprint placed it
   in Slice 8) and land before Slice 6.
-- **M4 — persistence is write-only.** Covered above; assign it explicitly to Slice 4 so it does not
-  drift to Slice 8. **Status: OPEN — not implemented in `324da8a`.**
-- **M5 — phones mutate playback the stage ignores.** Covered above; either wire the stage or flag
-  the controls. **Status: OPEN** for library playback. The YouTube `<video>` path consumes room
-  state, but the authoritative stage wiring is still owed.
+- **M4 — persistence is write-only.** **Status: CLOSED by Slice 4.**
+  `RoomRehydrator`/`RoomStateMapper` restore open rooms, playback anchors, and the persisted queue
+  sequence at startup when a database is configured.
+- **M5 — phones mutate playback the stage ignores.** **Status: CLOSED by Slice 4.** Room playback
+  takes over the stage: `playbackController.ts` loads library stems through the media API and
+  follows the authority; `DemoTrackPicker` is only an idle fallback.
 - **Minor backlog.** The 15 minors and 11 nits in
   [`docs/review/slice-3-review.md`](review/slice-3-review.md) (missing `QueueItemStateChanged` for
   the new playing item, no move/remove ownership checks, no reload auto-rejoin, duplicate
   `ParticipantJoined`, `IsSyntheticDemo` seeding, whole-queue persistence, `/healthz` format, enum
-  parity, fresh token per rejoin, and the rest) should be folded into Slice 4 planning.
+  parity, fresh token per rejoin, and the rest) remain carried forward; Slice 4 addressed the
+  playback-related ones (`QueueItemStateChanged` now fires on the authority-driven current item, and
+  whole-room state is persisted for rehydration), while the rest stay in the review backlog.
 - **ADR-005 governance gap.** No Slice 3 ADR was written, and §4.3/§5.2 still disagree on whether
   `JoinRequest` carries a session token. Settle the token/reconnect contract (and record the
   Slice 3 decisions) before building identity-dependent features.
@@ -923,19 +1064,20 @@ For full file lists, tests, and Definition-of-Done prompts, read [`docs/ARCHITEC
 
 **Why ETag and `immutable` caching?** A song id always maps to the same bytes because imports are not edited in place. Caching avoids re-downloading megabytes on every visit. The ETag is the correctness backstop: if length or modification time changes, the fingerprint changes.
 
-**Why does the stage not call `/api/songs` yet for library audio?** The phone remote does call the
-API and hub, and the YouTube video surface does fetch `/api/songs/{id}/video`, but stage *library
-audio* still loads the bundled `public/demo-tracks/` copies. That keeps `npm run dev` usable with one
-server and lets Playwright run without a database or seeded library. The stage also connects to the
-hub and renders the room queue; the remaining Slice 4 work replaces the local picker with
-authoritative room playback.
+**Why does the stage still bundle demo tracks?** Room playback does call the API: when a room is
+present, `playbackController.ts` loads library stems and lyrics through `songMedia.ts`
+(`/api/songs/{id}/instrumental|vocals|lyrics`). The bundled `public/demo-tracks/` copies remain for
+the idle `DemoTrackPicker` fallback, which keeps `npm run dev` usable with one server and lets the
+database-less Playwright specs run without a seeded library. Room playback is authoritative; the
+local picker is explicitly what happens when there is no room playback to follow.
 
-**Why is Slice 4 still open if a `slice-4` commit landed?** Commit `324da8a` is titled "slice-4" but
-contains the documented Slice 5 YouTube pipeline. The original roadmap was kept unchanged: YouTube
-is credited as completed early, while `PlaybackAuthority` and watchdog, authoritative stage
-playback, cold-start rehydration, and duplicate-end idempotency remain owed. The §5.3 wall-clock
-offset now drives the web stage video path. See
-[ADR-007](adr/007-slice-4-5-deliverable-ordering.md).
+**Why was Slice 4 completed after a `slice-4` commit had already landed?** Commit `324da8a` is
+titled "slice-4" but contains the documented Slice 5 YouTube pipeline. [ADR-007](adr/007-slice-4-5-deliverable-ordering.md)
+kept the original roadmap unchanged and credited YouTube as completed early, leaving the documented
+Slice 4 open. The authority, watchdog, authoritative stage playback, cold-start rehydration, and
+duplicate-end idempotency then landed, with the implementation choices in
+[ADR-008](adr/008-slice-4-playback-authority-decisions.md). Slice 4 is now complete; Slice 3 review
+M2 (client-declared stage role) and M3 (no room GC) remain open for the Slice 6 demo.
 
 **Why no `react-router`?** Three routes do not justify a dependency. `App.tsx` normalizes the pathname, switches, and listens for `popstate`. A router may become worthwhile when the remote adds more screens.
 
@@ -1013,8 +1155,8 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 - [`docs/review/slice-1-review.md`](review/slice-1-review.md) — how Slice 1 was reviewed and fixed.
 - [`docs/review/slice-2-review.md`](review/slice-2-review.md) — the browser-stage review and its nit backlog.
 - [`docs/review/slice-3-review.md`](review/slice-3-review.md) — the rooms/queue/remote review, the M1 fix, and the M2–M5 schedule.
-- [`docs/review/slice-4-review.md`](review/slice-4-review.md) — the early-YouTube/partial-Slice-4 review, the fixes that landed in its follow-up, and the open backlog.
-- [`docs/adr/`](adr/) — the seven decision records summarized in [§3.8](#38-docs--the-written-memory-of-the-project).
+- [`docs/review/slice-4-review.md`](review/slice-4-review.md) — the early-YouTube/partial-Slice-4 review, the fixes that landed in its follow-ups, and the Slice 4 completion record.
+- [`docs/adr/`](adr/) — the eight decision records summarized in [§3.8](#38-docs--the-written-memory-of-the-project).
 - [`src/apps/Karaokay.Api/Program.cs`](../src/apps/Karaokay.Api/Program.cs) — the smallest entry point; a good first read.
 - [`src/apps/Karaokay.Api/Hubs/StageHub.cs`](../src/apps/Karaokay.Api/Hubs/StageHub.cs) — the real-time entry point; read beside the TypeScript `useStageClient`.
 - [`src/clients/web/src/features/stage/StageShell.tsx`](../src/clients/web/src/features/stage/StageShell.tsx) — the phase machine tying UI, audio, and renderer together.

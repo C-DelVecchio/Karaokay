@@ -381,6 +381,35 @@ describe('WebAudioEngine clock', () => {
   });
 });
 
+describe('WebAudioEngine pause', () => {
+  it('preserves the media position, never fires onEnded, and resumes from the pause point', async () => {
+    const { engine, context } = createHarness();
+    await engine.unlock();
+    await engine.loadSong(song);
+
+    let ended = 0;
+    engine.onEnded = () => {
+      ended += 1;
+    };
+
+    context.currentTime = 0.5;
+    expect(engine.start()).toBe(true);
+    context.currentTime = 2.5;
+
+    expect(engine.pause()).toBeCloseTo(2_000, 5);
+    expect(engine.playing).toBe(false);
+    expect(engine.positionMs()).toBeCloseTo(2_000, 5);
+    expect(ended).toBe(0);
+
+    // The decoded buffers survive a pause, so resuming only creates fresh sources at the offset.
+    expect(engine.start(engine.positionMs())).toBe(true);
+    expect(engine.positionMs()).toBeCloseTo(2_000, 5);
+
+    context.currentTime = 3;
+    expect(engine.positionMs()).toBeCloseTo(2_500, 5);
+  });
+});
+
 describe('WebAudioEngine completion', () => {
   it('fires onEnded on natural completion but not after a manual stop', async () => {
     const { engine, context } = createHarness();

@@ -48,7 +48,10 @@ test('unlocks, counts down, then starts audio only after the lead-in', async ({ 
 
   await expect.poll(
     () => page.evaluate(() => (window.__karaokayAudioLog ?? []).includes('decodeAudioData:synth-twinkle-variations')),
-    { timeout: 1_500 },
+    // Decoding runs concurrently with the 2 000 ms count-in. 1.5 s was tight enough to flake on a
+    // cold first run with eight parallel workers, so allow a little slack while the count-in is
+    // still running; the assertions below are unchanged (a start before decode still fails them).
+    { timeout: 3_000 },
   ).toBe(true);
 
   const duringCountdown = await audioLog(page);

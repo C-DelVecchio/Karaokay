@@ -1,18 +1,11 @@
 using Karaokay.Api.Features;
-using Karaokay.Api.Hubs;
 using Karaokay.Contracts.Hubs;
 using Karaokay.Domain;
-using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.FileProviders;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
+using Karaokay.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using PlaybackStatus = Karaokay.Domain.PlaybackStatus;
 using QueueItemState = Karaokay.Domain.QueueItemState;
-using WireMediaSource = Karaokay.Contracts.Hubs.MediaSource;
 using WirePlaybackStatus = Karaokay.Contracts.Hubs.PlaybackStatus;
-using WireQueueItemState = Karaokay.Contracts.Hubs.QueueItemState;
 
 namespace Karaokay.UnitTests;
 
@@ -111,7 +104,7 @@ public sealed class QueueServiceTests
     }
 
     [Fact]
-    public async Task StartPlaybackBeginsTheFirstPlayableItem()
+    public async Task StartPlaybackCountsInThenBeginsTheFirstPlayableItem()
     {
         var (service, client) = CreateService();
         var room = CreateRoom();
@@ -119,13 +112,21 @@ public sealed class QueueServiceTests
 
         await service.StartPlaybackAsync(room, CancellationToken.None);
 
+        // Start enters the authority-owned count-in; the ticker completes it in the authority.
+        Assert.Equal(PlaybackStatus.Countdown, room.Status);
+        Assert.Equal(ready.Id, room.CurrentQueueItemId);
+        Assert.Equal(QueueItemState.Ready, ready.State);
+        Assert.NotNull(room.PlaybackStartedAtUtc);
+        Assert.Equal(PlaybackTiming.CountdownBeats, room.CountdownRemainingBeats);
+        Assert.Equal(WirePlaybackStatus.Countdown, client.PlaybackStates[^1].Status);
+
+        await service.CompleteCountdownAsync(room, ready.Id, CancellationToken.None);
+
         Assert.Equal(PlaybackStatus.Playing, room.Status);
         Assert.Equal(ready.Id, room.CurrentQueueItemId);
         Assert.Equal(QueueItemState.Playing, ready.State);
-        Assert.NotNull(room.PlaybackStartedAtUtc);
-        Assert.Equal(
-            WirePlaybackStatus.Playing,
-            client.PlaybackStates[^1].Status);
+        Assert.Equal(0, room.CountdownRemainingBeats);
+        Assert.Equal(WirePlaybackStatus.Playing, client.PlaybackStates[^1].Status);
     }
 
     [Fact]
@@ -148,6 +149,139 @@ public sealed class QueueServiceTests
         Assert.Equal(ready.Id, room.CurrentQueueItemId);
         Assert.NotNull(room.PlaybackStartedAtUtc);
         Assert.Equal(0, room.PausedAtPositionMs);
+    }
+
+    [Fact]
+    public async Task StartFromPausedIsIgnoredSoResumeRemainsThePath()
+    {
+        var clock = new TestTimeProvider(DateTimeOffset.UtcNow);
+        var (service, client, _) = RoomTestHarness.CreateQueueService(clock);
+        var room = CreateRoom();
+        var entry = AddEntry(room, QueueItemState.Ready, position: 0);
+
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+        await service.CompleteCountdownAsync(room, entry.Id, CancellationToken.None);
+
+        clock.Advance(TimeSpan.FromMilliseconds(1_500));
+        await service.PausePlaybackAsync(room, CancellationToken.None);
+        var pausedAt = room.PausedAtPositionMs;
+        Assert.Equal(1_500, pausedAt);
+        var broadcastsBefore = client.PlaybackStates.Count;
+
+        // Start is only meaningful from Idle/SongEnded: from Paused it must not rewind to zero and
+        // start a fresh count-in behind the phone's back (Resume is the explicit path).
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+
+        Assert.Equal(PlaybackStatus.Paused, room.Status);
+        Assert.Equal(entry.Id, room.CurrentQueueItemId);
+        Assert.Equal(pausedAt, room.PausedAtPositionMs);
+        Assert.Null(room.PlaybackStartedAtUtc);
+        Assert.Equal(0, room.CountdownRemainingBeats);
+        Assert.Equal(broadcastsBefore, client.PlaybackStates.Count);
+    }
+
+    [Fact]
+    public async Task RemovingTheCurrentItemResetsPlaybackToIdle()
+    {
+        var (service, client) = CreateService();
+        var room = CreateRoom();
+        var current = AddEntry(room, QueueItemState.Ready, position: 0, name: "Current");
+        var upcoming = AddEntry(room, QueueItemState.Ready, position: 1, name: "Upcoming");
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+        await service.CompleteCountdownAsync(room, current.Id, CancellationToken.None);
+        var broadcastsBefore = client.PlaybackStates.Count;
+
+        var removed = await service.RemoveQueueItemAsync(room, current.Id, CancellationToken.None);
+
+        Assert.True(removed);
+        Assert.Equal([upcoming.Id], QueueIds(room));
+        Assert.Equal(0, upcoming.Position);
+        Assert.Equal(PlaybackStatus.Idle, room.Status);
+        Assert.Null(room.CurrentQueueItemId);
+        Assert.Null(room.PlaybackStartedAtUtc);
+        Assert.Equal(0, room.PausedAtPositionMs);
+        Assert.Equal(WirePlaybackStatus.Idle, client.PlaybackStates[^1].Status);
+        Assert.Equal(broadcastsBefore + 1, client.PlaybackStates.Count);
+    }
+
+    [Fact]
+    public async Task RemovingTheCurrentItemPersistsTheIdlePlaybackReset()
+    {
+        var room = CreateRoom();
+        var current = AddEntry(room, QueueItemState.Playing, position: 0, name: "Current");
+        var upcoming = AddEntry(room, QueueItemState.Ready, position: 1, name: "Upcoming");
+        BeginPlaying(room, current);
+
+        var options = new DbContextOptionsBuilder<KaraokayDbContext>()
+            .UseInMemoryDatabase($"queue-remove-current-{Guid.NewGuid():N}")
+            .Options;
+        await using var database = new KaraokayDbContext(options);
+
+        database.Songs.AddRange(CreateSong(current.SongId), CreateSong(upcoming.SongId));
+        database.Rooms.Add(new PartyRoom
+        {
+            Id = room.Id,
+            Code = room.Code,
+            CreatedAtUtc = room.CreatedAtUtc,
+            Status = PlaybackStatus.Playing,
+            CurrentQueueItemId = current.Id,
+            PlaybackStartedAtUtc = room.PlaybackStartedAtUtc,
+        });
+        await database.SaveChangesAsync();
+
+        var (service, client, _) = RoomTestHarness.CreateQueueService(
+            scopeFactory: new FixedDatabaseScopeFactory(database));
+
+        var removed = await service.RemoveQueueItemAsync(room, current.Id, CancellationToken.None);
+
+        Assert.True(removed);
+
+        // §5.1 rule 6: the reset the broadcast announced must already be durable. Reading through
+        // a fresh, no-tracking query proves SaveChanges wrote the playback columns, not just memory.
+        var persistedRoom = await database.Rooms
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == room.Id);
+        Assert.Equal(PlaybackStatus.Idle, persistedRoom.Status);
+        Assert.Null(persistedRoom.CurrentQueueItemId);
+        Assert.Null(persistedRoom.PlaybackStartedAtUtc);
+        Assert.Equal(0, persistedRoom.PausedAtPositionMs);
+        Assert.Equal(room.QueueSequence, persistedRoom.QueueSequence);
+
+        var persistedQueue = await database.QueueItems
+            .AsNoTracking()
+            .Where(item => item.RoomId == room.Id)
+            .ToListAsync();
+        var remaining = Assert.Single(persistedQueue);
+        Assert.Equal(upcoming.Id, remaining.Id);
+        Assert.Equal(0, remaining.Position);
+
+        Assert.Equal(WirePlaybackStatus.Idle, client.PlaybackStates[^1].Status);
+    }
+
+    [Fact]
+    public async Task RemovingAnUpcomingItemLeavesPlaybackUntouched()
+    {
+        var (service, client) = CreateService();
+        var room = CreateRoom();
+        var current = AddEntry(room, QueueItemState.Ready, position: 0, name: "Current");
+        var upcoming = AddEntry(room, QueueItemState.Ready, position: 1, name: "Upcoming");
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+        await service.CompleteCountdownAsync(room, current.Id, CancellationToken.None);
+        var anchor = room.PlaybackStartedAtUtc;
+        var broadcastsBefore = client.PlaybackStates.Count;
+
+        var removed = await service.RemoveQueueItemAsync(room, upcoming.Id, CancellationToken.None);
+
+        Assert.True(removed);
+        Assert.Equal([current.Id], QueueIds(room));
+        Assert.Equal(PlaybackStatus.Playing, room.Status);
+        Assert.Equal(current.Id, room.CurrentQueueItemId);
+        Assert.Equal(anchor, room.PlaybackStartedAtUtc);
+        Assert.Equal(broadcastsBefore, client.PlaybackStates.Count);
+
+        // Absent item: idempotent no-op, reported so the hub can send NotFound.
+        Assert.False(
+            await service.RemoveQueueItemAsync(room, Guid.NewGuid(), CancellationToken.None));
     }
 
     [Fact]
@@ -191,7 +325,16 @@ public sealed class QueueServiceTests
         Assert.Equal(PlaybackStatus.Playing, room.Status);
     }
 
-    private static RoomState CreateRoom() => new(Guid.NewGuid(), "ABCD", DateTime.UtcNow);
+    private static RoomState CreateRoom() => RoomTestHarness.CreateRoom();
+
+    private static Song CreateSong(Guid id) => new()
+    {
+        Id = id,
+        Title = "Song",
+        DurationMs = 1_000,
+        Source = Karaokay.Domain.MediaSource.Multitrack,
+        CreatedAtUtc = DateTime.UtcNow,
+    };
 
     private static void BeginPlaying(RoomState room, RoomQueueEntry entry)
     {
@@ -204,162 +347,15 @@ public sealed class QueueServiceTests
         RoomState room,
         QueueItemState state,
         int position,
-        string name = "Song")
-    {
-        var entry = new RoomQueueEntry
-        {
-            Id = Guid.NewGuid(),
-            SongId = Guid.NewGuid(),
-            Position = position,
-            RequestedByName = "Ada",
-            State = state,
-            RequestedAtUtc = DateTime.UtcNow,
-            Song = new SongDto(Guid.NewGuid(), name, "Artist", 1_000, WireMediaSource.Multitrack, null),
-        };
-
-        room.QueueEntries.Add(entry);
-        return entry;
-    }
+        string name = "Song") =>
+        RoomTestHarness.AddEntry(room, state, position, name);
 
     private static Guid[] QueueIds(RoomState room) =>
         [.. room.QueueEntries.OrderBy(entry => entry.Position).Select(entry => entry.Id)];
 
     private static (QueueService Service, RecordingHubClient Client) CreateService()
     {
-        var client = new RecordingHubClient();
-        var scopeFactory = new NoDatabaseScopeFactory();
-        var library = new MediaLibrary(
-            Options.Create(new MediaLibraryOptions
-            {
-                MediaRoot = Path.Combine(Path.GetTempPath(), "karaokay-unit-media"),
-            }),
-            new TestHostEnvironment(),
-            NullLogger<MediaLibrary>.Instance);
-
-        var service = new QueueService(
-            scopeFactory,
-            new SongCatalog(scopeFactory, library),
-            new FakeHubContext(client),
-            NullLogger<QueueService>.Instance);
-
+        var (service, client, _) = RoomTestHarness.CreateQueueService();
         return (service, client);
-    }
-
-    /// <summary>Scope factory with no <c>KaraokayDbContext</c>, so persistence degrades to memory.</summary>
-    private sealed class NoDatabaseScopeFactory : IServiceScopeFactory
-    {
-        public IServiceScope CreateScope() => new EmptyScope();
-
-        private sealed class EmptyScope : IServiceScope, IServiceProvider
-        {
-            public IServiceProvider ServiceProvider => this;
-
-            public object? GetService(Type serviceType) => null;
-
-            public void Dispose()
-            {
-            }
-        }
-    }
-
-    private sealed class TestHostEnvironment : IHostEnvironment
-    {
-        public string EnvironmentName { get; set; } = Environments.Development;
-
-        public string ApplicationName { get; set; } = "Karaokay.UnitTests";
-
-        public string ContentRootPath { get; set; } = Path.GetTempPath();
-
-        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
-    }
-
-    private sealed class FakeHubContext : IHubContext<StageHub, IStageHubClient>
-    {
-        public FakeHubContext(IStageHubClient client) => Clients = new FakeHubClients(client);
-
-        public IHubClients<IStageHubClient> Clients { get; }
-
-        public IGroupManager Groups => throw new NotSupportedException();
-    }
-
-    private sealed class FakeHubClients : IHubClients<IStageHubClient>
-    {
-        private readonly IStageHubClient _client;
-
-        public FakeHubClients(IStageHubClient client) => _client = client;
-
-        public IStageHubClient All => _client;
-
-        public IStageHubClient AllExcept(IReadOnlyList<string> excludedConnectionIds) => _client;
-
-        public IStageHubClient Client(string connectionId) => _client;
-
-        public IStageHubClient Clients(IReadOnlyList<string> connectionIds) => _client;
-
-        public IStageHubClient Group(string groupName) => _client;
-
-        public IStageHubClient GroupExcept(string groupName, IReadOnlyList<string> excludedConnectionIds) =>
-            _client;
-
-        public IStageHubClient Groups(IReadOnlyList<string> groupNames) => _client;
-
-        public IStageHubClient User(string userId) => _client;
-
-        public IStageHubClient Users(IReadOnlyList<string> userIds) => _client;
-    }
-
-    private sealed class RecordingHubClient : IStageHubClient
-    {
-        public List<string> Events { get; } = [];
-
-        public List<PlaybackStateDto> PlaybackStates { get; } = [];
-
-        public List<(Guid QueueItemId, WireQueueItemState State)> QueueItemStates { get; } = [];
-
-        public Task JoinedRoom(RoomSnapshot snapshot) => Record(nameof(JoinedRoom));
-
-        public Task ParticipantJoined(string displayName, int guestCount) =>
-            Record(nameof(ParticipantJoined));
-
-        public Task ParticipantLeft(string displayName, int guestCount) =>
-            Record(nameof(ParticipantLeft));
-
-        public Task QueueChanged(QueueDelta delta) => Record(nameof(QueueChanged));
-
-        public Task QueueItemStateChanged(Guid queueItemId, WireQueueItemState state)
-        {
-            QueueItemStates.Add((queueItemId, state));
-            return Record(nameof(QueueItemStateChanged));
-        }
-
-        public Task DownloadProgressChanged(DownloadProgressDto dto) =>
-            Record(nameof(DownloadProgressChanged));
-
-        public Task SongReady(SongReadyDto dto) => Record(nameof(SongReady));
-
-        public Task DownloadFailed(DownloadFailedDto dto) => Record(nameof(DownloadFailed));
-
-        public Task PlaybackChanged(PlaybackStateDto dto)
-        {
-            PlaybackStates.Add(dto);
-            return Record(nameof(PlaybackChanged));
-        }
-
-        public Task CountdownTicked(CountdownDto dto) => Record(nameof(CountdownTicked));
-
-        public Task LyricsLoaded(Guid songId, LyricsDto lyricsRef) => Record(nameof(LyricsLoaded));
-
-        public Task SearchCompleted(string correlationId, IReadOnlyList<YouTubeSearchResultDto> results) =>
-            Record(nameof(SearchCompleted));
-
-        public Task RoomClosed(string reason) => Record(nameof(RoomClosed));
-
-        public Task HubError(HubErrorDto hubError) => Record(nameof(HubError));
-
-        private Task Record(string name)
-        {
-            Events.Add(name);
-            return Task.CompletedTask;
-        }
     }
 }

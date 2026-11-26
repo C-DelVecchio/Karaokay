@@ -33,6 +33,13 @@ builder.Services.AddSingleton<DownloadJobCoordinator>();
 builder.Services.AddSingleton<YouTubeIngestionService>();
 builder.Services.AddHostedService<MediaDownloadWorker>();
 
+// Single-writer playback authority (docs/ARCHITECTURE.md §5.1): the hub enqueues RoomCommands and
+// this hosted service is the only component that applies playback transitions. Exposed as both a
+// singleton (so the hub can enqueue) and a hosted service (so it actually runs).
+builder.Services.AddSingleton<PlaybackAuthority>();
+builder.Services.AddHostedService(static services => services.GetRequiredService<PlaybackAuthority>());
+builder.Services.AddSingleton<RoomRehydrator>();
+
 builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
 builder.Services.AddYouTubeRateLimiting();
@@ -96,6 +103,13 @@ static async Task ApplyDatabaseStartupAsync(WebApplication app)
     var library = app.Services.GetRequiredService<MediaLibrary>();
     await DemoSongSeeder
         .SeedAsync(database, library, app.Logger, CancellationToken.None)
+        .ConfigureAwait(false);
+
+    // Cold-start rehydration (Slice 3 review M4): rebuild the live registry from persisted rooms
+    // before the host starts serving, so a container restart resumes queues and anchors.
+    await app.Services
+        .GetRequiredService<RoomRehydrator>()
+        .RehydrateAsync(CancellationToken.None)
         .ConfigureAwait(false);
 }
 

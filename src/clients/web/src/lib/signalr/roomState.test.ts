@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { QueueDelta, QueueItemDto, RoomSnapshot } from './protocol';
 import { DownloadStage, PlaybackStatus, QueueItemState } from './protocol';
 import {
+  applyCountdownTick,
   applyDelta,
   applyDownloadFailed,
   applyDownloadProgress,
@@ -285,5 +286,109 @@ describe('applyPlayback', () => {
     expect(state.playback).toEqual(playback);
     expect(state.snapshot?.status).toBe(PlaybackStatus.Playing);
     expect(state.snapshot?.playback).toEqual(playback);
+  });
+});
+
+describe('count-in ring state', () => {
+  const countdownPlayback = {
+    ...snapshot.playback,
+    status: PlaybackStatus.Countdown,
+    currentQueueItemId: firstItem.id,
+    countdownRemainingBeats: 4,
+  };
+
+  function countdownState() {
+    return applySnapshot(createEmptyRoomState(), {
+      ...snapshot,
+      status: PlaybackStatus.Countdown,
+      playback: countdownPlayback,
+    });
+  }
+
+  it('seeds the ring from the Countdown broadcast and clears it on Playing', () => {
+    const initial = countdownState();
+    expect(initial.countdown).toEqual({
+      queueItemId: firstItem.id,
+      remainingBeats: 4,
+      beatMs: 500,
+      totalBeats: 4,
+    });
+
+    const playing = applyPlayback(initial, {
+      ...countdownPlayback,
+      status: PlaybackStatus.Playing,
+      countdownRemainingBeats: null,
+    });
+    expect(playing.countdown).toBeNull();
+  });
+
+  it('counts 4 → 1 from CountdownTicked pushes and keeps the total', () => {
+    let state = countdownState();
+
+    for (const remainingBeats of [4, 3, 2, 1]) {
+      state = applyCountdownTick(state, {
+        queueItemId: firstItem.id,
+        remainingBeats,
+        beatMs: 500,
+      });
+      expect(state.countdown).toEqual({
+        queueItemId: firstItem.id,
+        remainingBeats,
+        beatMs: 500,
+        totalBeats: 4,
+      });
+      expect(state.playback?.countdownRemainingBeats).toBe(remainingBeats);
+    }
+  });
+
+  it('is value-stable for a duplicate tick', () => {
+    const once = applyCountdownTick(countdownState(), {
+      queueItemId: firstItem.id,
+      remainingBeats: 2,
+      beatMs: 500,
+    });
+    const twice = applyCountdownTick(once, {
+      queueItemId: firstItem.id,
+      remainingBeats: 2,
+      beatMs: 500,
+    });
+
+    expect(twice).toBe(once);
+  });
+
+  it('ignores ticks for a stale item or after the status left Countdown', () => {
+    const initial = countdownState();
+    const stale = applyCountdownTick(initial, {
+      queueItemId: secondItem.id,
+      remainingBeats: 3,
+      beatMs: 500,
+    });
+    expect(stale).toBe(initial);
+
+    const playing = applyPlayback(initial, {
+      ...countdownPlayback,
+      status: PlaybackStatus.Playing,
+      countdownRemainingBeats: null,
+    });
+    const late = applyCountdownTick(playing, {
+      queueItemId: firstItem.id,
+      remainingBeats: 1,
+      beatMs: 500,
+    });
+    expect(late).toBe(playing);
+  });
+
+  it('preserves the latest tick when a Countdown broadcast has no beat count', () => {
+    const ticked = applyCountdownTick(countdownState(), {
+      queueItemId: firstItem.id,
+      remainingBeats: 3,
+      beatMs: 500,
+    });
+    const echo = applyPlayback(ticked, {
+      ...countdownPlayback,
+      countdownRemainingBeats: null,
+    });
+
+    expect(echo.countdown).toEqual(ticked.countdown);
   });
 });

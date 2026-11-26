@@ -1,5 +1,6 @@
-import { DownloadStage, QueueItemState } from './protocol';
+import { DownloadStage, PlaybackStatus, QueueItemState } from './protocol';
 import type {
+  CountdownDto,
   DownloadFailedDto,
   DownloadProgressDto,
   PlaybackStateDto,
@@ -26,6 +27,18 @@ export interface QueueDownloadState {
 }
 
 /**
+ * Count-in beat projection for the phone ring. `totalBeats` is the largest beat count seen for the
+ * current queue item, which is what makes the ring fill proportionally even though the server sends
+ * only the decreasing `remainingBeats`.
+ */
+export interface CountdownTickState {
+  queueItemId: string;
+  remainingBeats: number;
+  beatMs: number;
+  totalBeats: number;
+}
+
+/**
  * Pure client-side room state. `RoomSnapshot` is the single source of truth (join and rejoin take
  * the same path); deltas are applied only when their sequence is contiguous.
  *
@@ -40,6 +53,7 @@ export interface RemoteRoomState {
   queueSequence: number | null;
   downloads: Record<string, QueueDownloadState>;
   youtubeSongIds: string[];
+  countdown: CountdownTickState | null;
 }
 
 export function createEmptyRoomState(): RemoteRoomState {
@@ -51,6 +65,7 @@ export function createEmptyRoomState(): RemoteRoomState {
     queueSequence: null,
     downloads: {},
     youtubeSongIds: [],
+    countdown: null,
   };
 }
 
@@ -80,6 +95,43 @@ function pruneDownloads(
   return next;
 }
 
+/** Server-default count-in beat length (`PlaybackAuthority.CountdownBeatMs`). */
+export const DEFAULT_COUNTDOWN_BEAT_MS = 500;
+
+function clampBeats(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(99, Math.trunc(value)));
+}
+
+function countdownFromPlayback(
+  playback: PlaybackStateDto,
+  previous: CountdownTickState | null,
+): CountdownTickState | null {
+  if (playback.status !== PlaybackStatus.Countdown || !playback.currentQueueItemId) {
+    return null;
+  }
+
+  const queueItemId = playback.currentQueueItemId;
+  const sameItem = previous?.queueItemId === queueItemId;
+  const raw = playback.countdownRemainingBeats;
+  if (raw === null || raw === undefined) {
+    return sameItem && previous
+      ? previous
+      : { queueItemId, remainingBeats: 0, beatMs: DEFAULT_COUNTDOWN_BEAT_MS, totalBeats: 1 };
+  }
+
+  const remainingBeats = clampBeats(Number(raw));
+  return {
+    queueItemId,
+    remainingBeats,
+    beatMs: sameItem && previous ? previous.beatMs : DEFAULT_COUNTDOWN_BEAT_MS,
+    totalBeats: Math.max(1, sameItem && previous ? previous.totalBeats : 0, remainingBeats),
+  };
+}
+
 /** Applies a full snapshot. Idempotent: applying the same snapshot twice is a no-op in value. */
 export function applySnapshot(
   state: RemoteRoomState,
@@ -94,6 +146,7 @@ export function applySnapshot(
     queueSequence: snapshot.queueSequence,
     downloads: pruneDownloads(state.downloads, queue),
     youtubeSongIds: state.youtubeSongIds,
+    countdown: countdownFromPlayback(snapshot.playback, null),
   };
 }
 
@@ -144,9 +197,62 @@ export function applyPlayback(
   return {
     ...state,
     playback,
+    countdown: countdownFromPlayback(playback, state.countdown),
     snapshot: state.snapshot
       ? { ...state.snapshot, status: playback.status, playback }
       : null,
+  };
+}
+
+/**
+ * Applies one `CountdownTicked` push. Ticks for a stale item (the room already advanced) or after
+ * the status left `Countdown` are ignored; duplicates are value-stable.
+ */
+export function applyCountdownTick(
+  state: RemoteRoomState,
+  tick: CountdownDto,
+): RemoteRoomState {
+  const playback = state.playback;
+  if (playback?.currentQueueItemId && playback.currentQueueItemId !== tick.queueItemId) {
+    return state;
+  }
+
+  if (playback && playback.status !== PlaybackStatus.Countdown) {
+    return state;
+  }
+
+  const remainingBeats = clampBeats(tick.remainingBeats);
+  const beatMs = Number.isFinite(tick.beatMs) && tick.beatMs > 0
+    ? tick.beatMs
+    : DEFAULT_COUNTDOWN_BEAT_MS;
+  const previous = state.countdown;
+  const sameItem = previous?.queueItemId === tick.queueItemId;
+  const totalBeats = Math.max(
+    1,
+    sameItem && previous ? previous.totalBeats : 0,
+    remainingBeats,
+  );
+  const next: CountdownTickState = {
+    queueItemId: tick.queueItemId,
+    remainingBeats,
+    beatMs,
+    totalBeats,
+  };
+
+  if (
+    previous
+    && previous.queueItemId === next.queueItemId
+    && previous.remainingBeats === next.remainingBeats
+    && previous.beatMs === next.beatMs
+    && previous.totalBeats === next.totalBeats
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    countdown: next,
+    playback: playback ? { ...playback, countdownRemainingBeats: remainingBeats } : null,
   };
 }
 

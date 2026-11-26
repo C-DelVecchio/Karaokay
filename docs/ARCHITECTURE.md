@@ -23,7 +23,8 @@
 > [ADR-004](adr/004-dual-source-media-pipeline.md) ·
 > [ADR-005](adr/005-slice-1-blueprint-reconciliations.md) ·
 > [ADR-006](adr/006-line-wrapping-ownership.md) ·
-> [ADR-007](adr/007-slice-4-5-deliverable-ordering.md)
+> [ADR-007](adr/007-slice-4-5-deliverable-ordering.md) ·
+> [ADR-008](adr/008-slice-4-playback-authority-decisions.md)
 
 ## Table of Contents
 
@@ -810,16 +811,22 @@ Each slice below specifies files to create, required tests, and a copy-paste
 - API: `PlaybackAuthority.cs` (command channel, single writer, watchdog, `ReportSongEnded`
   idempotency guard), `PlaybackStateDto` broadcasts, `Ping/Pong` clock endpoint in hub,
   `SetGuideVocalVolume`.
-- Web: `useServerClock.ts` (median offset filter), stage `playbackController.ts`
-  (audio-as-ground-truth calibration, hard/soft video nudges per §5.3),
-  `YouTubeVideoSurface.tsx` (`<video>` routed through
+- Web: `lib/signalr/clockSync.ts` (Ping/Pong sampler with the 8-sample median offset filter; the
+  planned `useServerClock.ts` name never existed — see
+  [ADR-008](adr/008-slice-4-playback-authority-decisions.md)), stage `playbackController.ts`
+  (audio-as-ground-truth calibration, one-time server-anchor alignment, hard/soft video nudges per
+  §5.3), and `useStageVideo.ts` with `StageShell.tsx` hosting the `<video>` element (routed through
   `AudioContext.createMediaElementSource` into the same master + mic bus so guest voice still
-  mixes), stage interstitials (AwaitingDownload, SongEnded, Idle with QR corner overlay).
+  mixes; the planned `YouTubeVideoSurface.tsx` never existed), stage interstitials
+  (AwaitingDownload, SongEnded, Idle with QR corner overlay).
 
 **Tests**
 
-- Integration: full round-trip — Start → `PlaybackChanged(Playing, PositionMs=0,
-  TimeAnchorUtc=now)`; pause/resume preserves position within ±30 ms of authority's `PositionMs`;
+- Integration: full round-trip — Start → `PlaybackChanged(Countdown, PositionMs=0,
+  TimeAnchorUtc=countdown anchor)` → `CountdownTicked` beats → `PlaybackChanged(Playing,
+  PositionMs=0, fresh TimeAnchorUtc)` (two-phase Start; see
+  [ADR-008](adr/008-slice-4-playback-authority-decisions.md)); pause/resume preserves position
+  within ±30 ms of authority's `PositionMs`;
   skip advances; ended watchdog fires when stage silent for `duration+5s`; `GuideVocalVolume`
   broadcast reaches all clients; **double-advance protection — a second `ReportSongEnded` (or the
   watchdog firing after the stage report) is ignored because `queueItemId != CurrentQueueItemId`

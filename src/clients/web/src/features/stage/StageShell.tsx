@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DemoTrackPicker } from './DemoTrackPicker';
 import type { PickedDemoTrack } from './DemoTrackPicker';
 import { findLeadInGap } from './lyrics';
+import { useStagePlayback, type RoomPlaybackPhase } from './playbackController';
 import { CanvasLyricsRenderer } from './renderer/CanvasLyricsRenderer';
 import { StageRoomPanel } from './StageRoomPanel';
 import { useStageClock } from './useStageClock';
@@ -17,7 +18,7 @@ const engine = new WebAudioEngine();
 
 let audioUnlockAcknowledged = false;
 
-type StagePhase = 'picking' | 'countdown' | 'playing' | 'ended';
+type StagePhase = 'picking' | 'countdown' | 'playing' | 'paused' | 'ended';
 
 interface Selection {
   song: PickedDemoTrack;
@@ -28,6 +29,23 @@ interface CountdownState {
   totalBeats: number;
   beatsLeft: number;
   totalMs: number;
+}
+
+function stagePhaseForRoom(phase: RoomPlaybackPhase): StagePhase {
+  switch (phase) {
+    case 'countdown':
+    case 'loading':
+      return 'countdown';
+    case 'playing':
+      return 'playing';
+    case 'paused':
+      return 'paused';
+    case 'ended':
+      return 'ended';
+    default:
+      // Idle/awaiting-unlock keep the stage in the picker phase; the gate owns the screen.
+      return 'picking';
+  }
 }
 
 export function StageShell() {
@@ -48,7 +66,13 @@ export function StageShell() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<CanvasLyricsRenderer | null>(null);
   const subscribeStageClock = useStageClock(engine);
-  const { status: roomStatus, room, serverNow, reportSongEnded } = useStageRoom();
+  const {
+    status: roomStatus,
+    room,
+    serverNow,
+    reportSongEnded,
+    setGuideVocalVolume,
+  } = useStageRoom();
   const playback = room.playback ?? room.snapshot?.playback ?? null;
   const video = useStageVideo({
     playback,
@@ -59,12 +83,36 @@ export function StageShell() {
       void reportSongEnded(queueItemId);
     },
   });
+  const roomPlayback = useStagePlayback({
+    engine,
+    playback,
+    audioUnlocked,
+    serverNow,
+    onSongEnded: (queueItemId) => {
+      void reportSongEnded(queueItemId);
+    },
+    onLyrics: (lyrics) => {
+      rendererRef.current?.load(lyrics);
+    },
+  });
   const videoMode = video.mode === 'video';
+  const roomActive = roomPlayback.status.active && !videoMode;
+  const effectivePhase: StagePhase = roomActive
+    ? stagePhaseForRoom(roomPlayback.status.phase)
+    : phase;
 
-  phaseRef.current = phase;
+  phaseRef.current = effectivePhase;
+
+  const roomEndedRef = useRef(roomPlayback.handleEngineEnded);
+  roomEndedRef.current = roomPlayback.handleEngineEnded;
 
   useEffect(() => {
     engine.onEnded = () => {
+      // A room library song owns the engine's natural end; the controller reports it exactly once.
+      if (roomEndedRef.current()) {
+        return;
+      }
+
       tokenRef.current += 1;
       setSelection(null);
       setCountdown(null);
@@ -94,6 +142,20 @@ export function StageShell() {
     rendererRef.current?.clear();
   }, [videoMode]);
 
+  // A room queue item owns the stage: retire the local demo selection without touching the engine
+  // (the playback controller loads/stops it in the same commit).
+  useEffect(() => {
+    if (!roomActive) {
+      return;
+    }
+
+    tokenRef.current += 1;
+    setSelection(null);
+    setCountdown(null);
+    setLoadError(null);
+    rendererRef.current?.clear();
+  }, [roomActive]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -117,17 +179,32 @@ export function StageShell() {
 
   // The canvas consumes the stage clock during the lead-in and playback; React never re-renders.
   useEffect(() => {
-    if (phase !== 'countdown' && phase !== 'playing') {
+    if (effectivePhase !== 'countdown' && effectivePhase !== 'playing' && effectivePhase !== 'paused') {
       return undefined;
     }
 
     return subscribeStageClock((positionMs) => {
-      const renderTimeMs = phaseRef.current === 'playing' || stageTestClock.isSet()
-        ? positionMs
-        : countdownElapsedRef.current;
-      rendererRef.current?.render(renderTimeMs);
+      const audioPosition =
+        effectivePhase === 'playing' || effectivePhase === 'paused' || stageTestClock.isSet();
+      rendererRef.current?.render(audioPosition ? positionMs : countdownElapsedRef.current);
     });
-  }, [phase, subscribeStageClock]);
+  }, [effectivePhase, subscribeStageClock]);
+
+  // The server is authoritative for guide-vocal level whenever a room is present.
+  const roomGuideVolume = playback?.guideVocalVolume;
+  useEffect(() => {
+    if (roomStatus !== 'live' || roomGuideVolume === undefined) {
+      return;
+    }
+
+    const next = Math.min(1, Math.max(0, Number(roomGuideVolume)));
+    if (!Number.isFinite(next)) {
+      return;
+    }
+
+    setGuideVolume((current) => (Math.abs(current - next) < 0.0001 ? current : next));
+    engine.setGuideVocalVolume(next);
+  }, [roomStatus, roomGuideVolume]);
 
   const handleEnableAudio = () => {
     setAudioGateMessage(null);
@@ -146,7 +223,7 @@ export function StageShell() {
   };
 
   const handlePick = (song: PickedDemoTrack) => {
-    if (!engine.unlocked || videoMode) {
+    if (!engine.unlocked || videoMode || roomActive) {
       return;
     }
 
@@ -157,6 +234,14 @@ export function StageShell() {
     countdownElapsedRef.current = 0;
     rendererRef.current?.load(song.lyrics);
     setSelection({ song, token });
+  };
+
+  const handleGuideVolume = (value: number) => {
+    setGuideVolume(value);
+    engine.setGuideVocalVolume(value);
+    if (roomStatus === 'live') {
+      void setGuideVocalVolume(value);
+    }
   };
 
   // Pre-buffer + lead-in countdown run concurrently; start waits for both (and for the unlock).
@@ -249,8 +334,21 @@ export function StageShell() {
     };
   }, [selection]);
 
+  const roomCountdownBeats = roomActive
+    ? Math.max(0, roomPlayback.status.countdownBeats ?? 0)
+    : 0;
+  const roomSong = roomPlayback.status.song;
+  const stageError = loadError ?? roomPlayback.status.error;
+
   return (
-    <main className="stage" data-phase={phase} data-video={videoMode ? 'true' : 'false'}>
+    <main
+      className="stage"
+      data-phase={effectivePhase}
+      data-video={videoMode ? 'true' : 'false'}
+      data-room={roomActive ? 'true' : 'false'}
+      data-song-id={roomActive ? roomSong?.id : undefined}
+      data-queue-item-id={roomActive ? roomPlayback.status.queueItemId ?? undefined : undefined}
+    >
       {/*
         One persistent video element for the whole page session. It is never recreated, so the
         single MediaElementAudioSourceNode created on unlock stays valid across songs.
@@ -294,7 +392,10 @@ export function StageShell() {
         {videoMode && playback?.currentSong && (
           <p className="stage-now-playing">{playback.currentSong.title}</p>
         )}
-        {!videoMode && phase === 'playing' && selection && (
+        {!videoMode && roomActive && roomSong && (
+          <p className="stage-now-playing">{roomSong.title}</p>
+        )}
+        {!videoMode && !roomActive && effectivePhase === 'playing' && selection && (
           <p className="stage-now-playing">{selection.song.lyrics.title}</p>
         )}
       </header>
@@ -313,52 +414,65 @@ export function StageShell() {
         </div>
       )}
 
-      {loadError && (
+      {stageError && (
         <p className="stage-error" role="alert">
-          {loadError}
+          {stageError}
         </p>
       )}
 
-      {phase === 'countdown' && countdown && selection && (
+      {effectivePhase === 'countdown' && (roomActive ? roomSong : selection?.song.lyrics) && (
         <section className="stage-countdown" aria-live="polite">
-          <p className="stage-now-playing">{selection.song.lyrics.title}</p>
-          <p>Get ready… {countdown.beatsLeft} beats</p>
+          <p className="stage-now-playing">
+            {roomActive ? roomSong?.title : selection?.song.lyrics.title}
+          </p>
+          <p>
+            Get ready…
+            {roomActive
+              ? roomCountdownBeats > 0 ? ` ${roomCountdownBeats} beats` : ''
+              : ` ${countdown?.beatsLeft ?? 0} beats`}
+          </p>
           <div className="countdown-dots" aria-hidden="true">
-            {Array.from({ length: countdown.beatsLeft }, (_, index) => (
-              <span key={index} className="countdown-dot" />
-            ))}
+            {Array.from(
+              { length: roomActive ? roomCountdownBeats : countdown?.beatsLeft ?? 0 },
+              (_, index) => (
+                <span key={index} className="countdown-dot" />
+              ),
+            )}
           </div>
         </section>
       )}
 
-      {!videoMode && phase === 'playing' && selection && (
-        <section className="stage-transport">
-          <label htmlFor="guide-vocals">Guide vocals</label>
-          <input
-            id="guide-vocals"
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={guideVolume}
-            onChange={(event) => {
-              const value = Number(event.currentTarget.value);
-              setGuideVolume(value);
-              engine.setGuideVocalVolume(value);
-            }}
-          />
-        </section>
-      )}
+      {!videoMode
+        && (effectivePhase === 'playing' || effectivePhase === 'paused')
+        && (roomActive || selection) && (
+          <section className="stage-transport">
+            <label htmlFor="guide-vocals">Guide vocals</label>
+            <input
+              id="guide-vocals"
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={guideVolume}
+              onChange={(event) => {
+                handleGuideVolume(Number(event.currentTarget.value));
+              }}
+            />
+          </section>
+        )}
 
-      {!videoMode && (phase === 'picking' || phase === 'ended') && (
-        <>
-          {phase === 'ended' && <p className="stage-complete">Song complete — pick another!</p>}
-          <DemoTrackPicker
-            onPick={handlePick}
-            disabled={audioGateVisible || !engine.unlocked}
-          />
-        </>
-      )}
+      {!videoMode && !roomActive
+        && (effectivePhase === 'picking' || effectivePhase === 'ended') && (
+          <>
+            {effectivePhase === 'ended' && (
+              <p className="stage-complete">Song complete — pick another!</p>
+            )}
+            <DemoTrackPicker
+              onPick={handlePick}
+              disabled={audioGateVisible || !engine.unlocked}
+            />
+          </>
+        )}
     </main>
   );
 }

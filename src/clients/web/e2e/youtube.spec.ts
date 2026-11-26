@@ -82,6 +82,29 @@ test('guest searches, enqueues, and the stage plays the downloaded video', async
       )
       .toBe(false);
 
+    // A jump well past the 120 ms hard-nudge threshold is pulled back onto the authoritative
+    // position by the next reconciliation pass (the pure threshold logic is unit-tested in
+    // `videoSync.test.ts`; this pins the element wiring end-to-end).
+    const nudge = await stage.evaluate(() => {
+      const surface = window.__karaokayVideo;
+      if (!surface) {
+        return null;
+      }
+
+      surface.injectDrift(300);
+      const beforeMs = Math.abs(surface.currentTime() * 1000 - surface.expectedMs());
+      surface.syncNow();
+      return {
+        beforeMs,
+        afterMs: Math.abs(surface.currentTime() * 1000 - surface.expectedMs()),
+      };
+    });
+    expect(nudge).not.toBeNull();
+    // The injection really moved the element out of the dead band (otherwise the seek below proves
+    // nothing) and the 300 ms jump leaves at least a 120 ms correction.
+    expect(nudge?.beforeMs ?? 0).toBeGreaterThan(200);
+    expect(nudge?.afterMs ?? Number.POSITIVE_INFINITY).toBeLessThan(150);
+
     // The canvas element stays mounted (the video overlays it) and the demo picker is gone.
     await expect(stage.locator('#stage-canvas')).toBeVisible();
     await expect(stage.locator('.stage-now-playing')).toContainText('E2E Karaoke Fixture');

@@ -25,6 +25,7 @@ import {
   type DownloadFailedDto,
   type DownloadProgressDto,
   type SongReadyDto,
+  type CountdownDto,
   type YouTubeQueueRequest,
   type YouTubeSearchResultDto,
 } from './protocol';
@@ -38,6 +39,7 @@ export interface StageClientHandlers {
   onSongReady?: (ready: SongReadyDto) => void;
   onDownloadFailed?: (failed: DownloadFailedDto) => void;
   onPlaybackChanged?: (playback: PlaybackStateDto) => void;
+  onCountdownTicked?: (tick: CountdownDto) => void;
   onParticipantJoined?: (displayName: string, guestCount: number) => void;
   onParticipantLeft?: (displayName: string, guestCount: number) => void;
   onHubError?: (error: HubErrorDto) => void;
@@ -262,6 +264,10 @@ export class StageClient {
 
     connection.on(CLIENT_METHODS.PlaybackChanged, (playback: PlaybackStateDto) => {
       this.handlersRef.current.onPlaybackChanged?.(playback);
+    });
+
+    connection.on(CLIENT_METHODS.CountdownTicked, (tick: CountdownDto) => {
+      this.handlersRef.current.onCountdownTicked?.(tick);
     });
 
     connection.on(

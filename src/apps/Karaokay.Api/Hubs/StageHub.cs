@@ -21,6 +21,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     private readonly RoomRegistry _registry;
     private readonly RoomService _rooms;
     private readonly QueueService _queue;
+    private readonly PlaybackAuthority _playback;
     private readonly YouTubeIngestionService _youtube;
     private readonly FeatureOptions _features;
     private readonly ILogger<StageHub> _logger;
@@ -29,6 +30,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
         RoomRegistry registry,
         RoomService rooms,
         QueueService queue,
+        PlaybackAuthority playback,
         YouTubeIngestionService youtube,
         IOptions<FeatureOptions> features,
         ILogger<StageHub> logger)
@@ -36,6 +38,7 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
         _registry = registry;
         _rooms = rooms;
         _queue = queue;
+        _playback = playback;
         _youtube = youtube;
         _features = features.Value;
         _logger = logger;
@@ -207,7 +210,16 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     public async Task RemoveQueueItem(Guid queueItemId)
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        if (!await _queue.RemoveQueueItemAsync(room, queueItemId, CancellationToken.None).ConfigureAwait(false))
+
+        // Membership/role checks stay at the hub (above), but the removal and the playback reset it
+        // may trigger are playback state, so the single-writer authority owns them (§5.1 rule 6).
+        var removed = await EnqueuePlaybackCommandAsync(
+                room,
+                RoomCommandTypes.RemoveQueueItem,
+                queueItemId: queueItemId)
+            .ConfigureAwait(false);
+
+        if (!removed)
         {
             await SendErrorAsync(HubErrorCodes.NotFound, "That queue item no longer exists.")
                 .ConfigureAwait(false);
@@ -241,35 +253,39 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
     public async Task StartPlayback()
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.StartPlaybackAsync(room, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(room, RoomCommandTypes.StartPlayback)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task PausePlayback()
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.PausePlaybackAsync(room, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(room, RoomCommandTypes.PausePlayback)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task ResumePlayback()
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.ResumePlaybackAsync(room, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(room, RoomCommandTypes.ResumePlayback)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task SkipSong()
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.SkipSongAsync(room, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(room, RoomCommandTypes.SkipSong).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task RestartSong()
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.RestartSongAsync(room, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(room, RoomCommandTypes.RestartSong)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -278,15 +294,23 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
         var (room, _) = await RequireStageAsync().ConfigureAwait(false);
 
         // Idempotent by construction: anything but the current item is silently ignored so a
-        // duplicate stage report and the future watchdog can never double-advance (§5.1 rule 1).
-        await _queue.ReportSongEndedAsync(room, queueItemId, CancellationToken.None).ConfigureAwait(false);
+        // duplicate stage report and the duration watchdog can never double-advance (§5.1 rule 1).
+        await EnqueuePlaybackCommandAsync(
+                room,
+                RoomCommandTypes.ReportSongEnded,
+                queueItemId: queueItemId)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task SetGuideVocalVolume(double volume)
     {
         var (room, _) = await RequireRoomAsync().ConfigureAwait(false);
-        await _queue.SetGuideVocalVolumeAsync(room, volume, CancellationToken.None).ConfigureAwait(false);
+        await EnqueuePlaybackCommandAsync(
+                room,
+                RoomCommandTypes.SetGuideVocalVolume,
+                volume: volume)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -362,6 +386,30 @@ public sealed partial class StageHub : Hub<IStageHubClient>, IStageHub
 
     private Task SendErrorAsync(string code, string message) =>
         Clients.Caller.HubError(new HubErrorDto(code, message));
+
+    /// <summary>
+    /// Hands a playback transition to the single-writer <see cref="PlaybackAuthority"/> (§5.1
+    /// rule 6) and waits until it has been persisted and broadcast, so the invoking client's next
+    /// snapshot already reflects the transition. The result is the command outcome (used by removal
+    /// to surface <c>NotFound</c>). Enqueue/move keep their direct serialized path in
+    /// <see cref="QueueService"/>; removal is authority-owned because deleting the current item
+    /// resets playback.
+    /// </summary>
+    private Task<bool> EnqueuePlaybackCommandAsync(
+        RoomState room,
+        string type,
+        Guid? queueItemId = null,
+        double? volume = null) =>
+        _playback.EnqueueAsync(
+            new RoomCommand
+            {
+                Type = type,
+                RoomCode = room.Code,
+                ConnectionId = Context.ConnectionId,
+                QueueItemId = queueItemId,
+                Volume = volume,
+            },
+            CancellationToken.None);
 
     private async Task DetachFromPreviousRoomAsync(string newCode)
     {

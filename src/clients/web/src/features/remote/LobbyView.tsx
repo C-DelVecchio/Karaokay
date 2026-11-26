@@ -77,6 +77,7 @@ export function LobbyView({ api }: LobbyViewProps) {
 
       <PlaybackControls
         playback={state.playback ?? snapshot.playback}
+        countdown={state.countdown}
         disabled={disabled}
         onStart={api.startPlayback}
         onPause={api.pausePlayback}

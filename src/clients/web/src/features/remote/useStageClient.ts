@@ -12,6 +12,7 @@ import type {
   StageConnectionStatus,
 } from '../../lib/signalr/protocol';
 import {
+  applyCountdownTick,
   applyDelta,
   applyDownloadFailed,
   applyDownloadProgress,
@@ -85,6 +86,7 @@ export function useStageClient(): StageClientApi {
       onSongReady: (ready) => setState((current) => applySongReady(current, ready)),
       onDownloadFailed: (failed) => setState((current) => applyDownloadFailed(current, failed)),
       onPlaybackChanged: (playback) => setState((current) => applyPlayback(current, playback)),
+      onCountdownTicked: (tick) => setState((current) => applyCountdownTick(current, tick)),
       onParticipantJoined: (_displayName, guestCount) =>
         setState((current) => applyGuestCount(current, guestCount)),
       onParticipantLeft: (_displayName, guestCount) =>
