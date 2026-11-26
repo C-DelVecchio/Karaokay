@@ -58,7 +58,13 @@
         { "action": "shell", "resource": "npm *", "effect": "allow" },
         { "action": "shell", "resource": "npx *", "effect": "allow" },
         { "action": "shell", "resource": "cmake *", "effect": "allow" },
-        { "action": "shell", "resource": "ctest *", "effect": "allow" }
+        { "action": "shell", "resource": "ctest *", "effect": "allow" },
+        { "action": "shell", "resource": "docker *", "effect": "allow" },
+        { "action": "shell", "resource": "dotnet run*", "effect": "allow" },
+        { "action": "shell", "resource": "curl *", "effect": "allow" },
+        { "action": "shell", "resource": "sleep *", "effect": "allow" },
+        { "action": "shell", "resource": "pkill *", "effect": "allow" },
+        { "action": "shell", "resource": "ss *", "effect": "allow" }
       ]
     },
     "native-coder": {
