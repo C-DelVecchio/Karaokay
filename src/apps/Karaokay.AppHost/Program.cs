@@ -3,11 +3,16 @@
 // the API reads as ConnectionStrings:Karaokay (docs/ARCHITECTURE.md §2/§7, Slice 3).
 // The API waits for the Karaokay database to be ready before starting, since EF Core migrations
 // run at API startup (docs/ARCHITECTURE.md §2/§7, Slice 3).
+// The Postgres password is pinned to a literal dev value: the data volume below persists the
+// cluster across restarts, so a randomly generated password would no longer match on the next run.
 
 var builder = DistributedApplication.CreateBuilder(args);
 
+var postgresPassword = builder.AddParameter("postgres-password", "karaokay-dev-password", secret: true);
+
 var postgres = builder.AddPostgres("postgres")
-    .WithDataVolume("karaokay-postgres-data");
+    .WithDataVolume("karaokay-postgres-data")
+    .WithPassword(postgresPassword);
 
 var karaokayDatabase = postgres.AddDatabase("Karaokay");
 
