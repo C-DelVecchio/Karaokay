@@ -50,12 +50,32 @@ test('guest searches, enqueues, and the stage plays the downloaded video', async
     await phone.getByRole('tab', { name: /Queue/ }).click();
     const queueRow = phone.locator('.queue-row[data-youtube="true"]');
     await expect(queueRow).toHaveCount(1);
+    // The queue DTO carries the real title; the songs snapshot has no row for this new video yet.
+    await expect(queueRow.locator('.queue-title')).toHaveText('E2E Karaoke Fixture');
     const badge = queueRow.locator('.queue-badge');
 
     // The shim's four progress samples are spaced out so the guest can observe a real percentage.
     await expect(badge).toHaveText(/\d+%/, { timeout: 15_000 });
     await expect(queueRow).toHaveAttribute('data-state', '2', { timeout: 30_000 });
     await expect(badge).toContainText('Ready');
+
+    // Regression guard: assigning `src` briefly reports NETWORK_NO_SOURCE/readyState 0 before the
+    // fetch starts. A successful start must never surface the "video unavailable" card from that
+    // pre-load window (record any mount, including transient ones).
+    await stage.evaluate(() => {
+      const root = document.querySelector('main.stage');
+      if (!root) {
+        return;
+      }
+
+      const observer = new MutationObserver(() => {
+        if (root.querySelector('.stage-video-error')) {
+          root.setAttribute('data-saw-video-error', 'true');
+          observer.disconnect();
+        }
+      });
+      observer.observe(root, { childList: true, subtree: true });
+    });
 
     // Start playback: the stage must switch from the demo-stem surface to the YouTube <video>.
     await phone.getByRole('button', { name: 'Start' }).click();
@@ -81,6 +101,11 @@ test('guest searches, enqueues, and the stage plays the downloaded video', async
         { timeout: 15_000 },
       )
       .toBe(false);
+
+    // The pre-load window was not misreported: by now the video is playing, and no error card may
+    // have mounted at any point during the start (the observer records transient mounts too).
+    await expect(stageMain).not.toHaveAttribute('data-saw-video-error', 'true');
+    await expect(stage.locator('.stage-video-error')).toHaveCount(0);
 
     // A jump well past the 120 ms hard-nudge threshold is pulled back onto the authoritative
     // position by the next reconciliation pass (the pure threshold logic is unit-tested in

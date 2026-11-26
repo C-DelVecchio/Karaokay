@@ -23,6 +23,13 @@ export const NETWORK_NO_SOURCE = 3;
 /** `MediaError.MEDIA_ERR_ABORTED`: a load superseded by a source change, not a failure. */
 export const MEDIA_ERR_ABORTED = 1;
 
+/**
+ * A freshly assigned `src` reports `NETWORK_NO_SOURCE` + `readyState 0` synchronously, before the
+ * fetch starts, so an immediate observation is not evidence of a failed download. Only a
+ * code-less no-source state that persists this long is treated as a failure.
+ */
+export const NO_SOURCE_FAILURE_MS = 1_000;
+
 export type StageVideoNoticeKind = 'unavailable' | 'autoplay-blocked';
 
 export interface StageVideoNotice {
@@ -45,13 +52,24 @@ export interface MediaElementSnapshot {
   readyState: number;
 }
 
+/** No `MediaError`, but resource selection has no usable source and nothing is buffered yet. */
+export function isNoSourceStall(snapshot: MediaElementSnapshot): boolean {
+  return snapshot.errorCode === null
+    && snapshot.networkState === NETWORK_NO_SOURCE
+    && snapshot.readyState === 0;
+}
+
 /**
  * Detects a source that cannot play at all. A 404 from `/api/songs/{id}/video` surfaces as a
- * `MediaError` (usually `MEDIA_ERR_SRC_NOT_SUPPORTED`) and/or `NETWORK_NO_SOURCE` with an empty
- * ready state. Codes 2–4 are permanent for this `src`, unlike buffering (`NETWORK_LOADING`);
- * `MEDIA_ERR_ABORTED` (1) only means a newer load superseded this one and is ignored.
+ * `MediaError` (usually `MEDIA_ERR_SRC_NOT_SUPPORTED`), which is permanent for this `src` unlike
+ * buffering (`NETWORK_LOADING`); `MEDIA_ERR_ABORTED` (1) only means a newer load superseded this
+ * one and is ignored. The code-less no-source state only counts once it has persisted for
+ * `NO_SOURCE_FAILURE_MS` (see `isNoSourceStall`).
  */
-export function videoFailureNotice(snapshot: MediaElementSnapshot): StageVideoNotice | null {
+export function videoFailureNotice(
+  snapshot: MediaElementSnapshot,
+  noSourceStalledMs = 0,
+): StageVideoNotice | null {
   if (!snapshot.videoMode || !snapshot.hasSource) {
     return null;
   }
@@ -62,8 +80,19 @@ export function videoFailureNotice(snapshot: MediaElementSnapshot): StageVideoNo
       : { kind: 'unavailable', message: VIDEO_UNAVAILABLE_MESSAGE };
   }
 
-  const failed = snapshot.networkState === NETWORK_NO_SOURCE && snapshot.readyState === 0;
+  const failed = isNoSourceStall(snapshot) && noSourceStalledMs >= NO_SOURCE_FAILURE_MS;
   return failed ? { kind: 'unavailable', message: VIDEO_UNAVAILABLE_MESSAGE } : null;
+}
+
+/**
+ * A decoded source (or active playback) is definitive proof that an earlier "unavailable" verdict
+ * was wrong. Autoplay-blocked notices are not source failures and are left to `retryPlayback`.
+ */
+export function videoLoadRecovered(snapshot: MediaElementSnapshot): boolean {
+  return snapshot.videoMode
+    && snapshot.hasSource
+    && snapshot.errorCode === null
+    && snapshot.readyState >= 1;
 }
 
 /**

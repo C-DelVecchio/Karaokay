@@ -4,10 +4,12 @@ import { PlaybackStatus } from '../../lib/signalr/protocol';
 import type { WebAudioEngine } from './WebAudioEngine';
 import {
   expectedPositionMs,
+  isNoSourceStall,
   isYouTubePlayback,
   playRejectionNotice,
   videoCorrection,
   videoFailureNotice,
+  videoLoadRecovered,
   videoUrlForSong,
   type MediaElementSnapshot,
   type StageVideoNotice,
@@ -106,6 +108,8 @@ export function useStageVideo({
   const songIdRef = useRef<string | null>(null);
   const noticeRef = useRef<StageVideoNotice | null>(null);
   const failureDismissedRef = useRef(false);
+  /** `performance.now()` when the current code-less no-source stall began, or null. */
+  const noSourceSinceRef = useRef<number | null>(null);
   const syncNowRef = useRef<() => void>(() => undefined);
   const reportedEndsRef = useRef(new Set<string>());
   const [notice, setNotice] = useState<StageVideoNotice | null>(null);
@@ -147,6 +151,7 @@ export function useStageVideo({
 
     if (mode !== 'video' || !songId) {
       failureDismissedRef.current = false;
+      noSourceSinceRef.current = null;
       releaseVideo(video);
       return;
     }
@@ -155,6 +160,7 @@ export function useStageVideo({
     if (video.getAttribute('src') !== nextUrl) {
       // A new source deserves a fresh verdict: drop any failure carried over from the last song.
       failureDismissedRef.current = false;
+      noSourceSinceRef.current = null;
       updateNotice(null);
       video.pause();
       video.muted = true;
@@ -192,6 +198,14 @@ export function useStageVideo({
       }
     };
 
+    const healUnavailableNotice = () => {
+      noSourceSinceRef.current = null;
+      if (noticeRef.current?.kind === 'unavailable') {
+        failureDismissedRef.current = false;
+        updateNotice(null);
+      }
+    };
+
     const sync = () => {
       const current = playbackRef.current;
       if (!current || modeRef.current !== 'video') {
@@ -201,11 +215,29 @@ export function useStageVideo({
       // The error event can fire before the element has a listener (e.g. the room starts while
       // the audio gate is still up). The immediate `sync()` below runs right after the listeners
       // attach at unlock time, so the element's error state is recovered then; the 500 ms interval
-      // keeps the classification current for errors that happen during playback.
-      const failure = videoFailureNotice(snapshotOf(video, true));
+      // keeps the classification current for errors that happen during playback. A code-less
+      // no-source state is only trusted after it persists: `src` assignment itself briefly reports
+      // NETWORK_NO_SOURCE/readyState 0 before the fetch starts.
+      const snapshot = snapshotOf(video, true);
+      const now = performance.now();
+      if (!isNoSourceStall(snapshot)) {
+        noSourceSinceRef.current = null;
+      } else if (noSourceSinceRef.current === null) {
+        noSourceSinceRef.current = now;
+      }
+
+      const noSourceStalledMs = noSourceSinceRef.current === null
+        ? 0
+        : now - noSourceSinceRef.current;
+      const failure = videoFailureNotice(snapshot, noSourceStalledMs);
       if (failure) {
         updateNotice(failure);
         return;
+      }
+
+      // Playback that decoded frames proves an earlier unavailable verdict was a false alarm.
+      if (videoLoadRecovered(snapshot)) {
+        healUnavailableNotice();
       }
 
       if (video.readyState < 1) {
@@ -272,6 +304,8 @@ export function useStageVideo({
     video.addEventListener('loadedmetadata', sync);
     video.addEventListener('ended', handleEnded);
     video.addEventListener('error', handleError);
+    video.addEventListener('playing', healUnavailableNotice);
+    video.addEventListener('timeupdate', healUnavailableNotice);
 
     return () => {
       window.clearInterval(interval);
@@ -282,6 +316,8 @@ export function useStageVideo({
       video.removeEventListener('loadedmetadata', sync);
       video.removeEventListener('ended', handleEnded);
       video.removeEventListener('error', handleError);
+      video.removeEventListener('playing', healUnavailableNotice);
+      video.removeEventListener('timeupdate', healUnavailableNotice);
       syncNowRef.current = () => undefined;
     };
   }, [audioUnlocked, engine, mode, updateNotice]);
@@ -361,7 +397,9 @@ export function useStageVideo({
     failureDismissedRef.current = false;
     if (noticeRef.current?.kind === 'unavailable') {
       // A failed fetch leaves the element in an error state; `load()` is the only way to ask the
-      // same URL again after the backend has recovered.
+      // same URL again after the backend has recovered. The reload also restarts the no-source
+      // confirmation window.
+      noSourceSinceRef.current = null;
       video.load();
     }
 

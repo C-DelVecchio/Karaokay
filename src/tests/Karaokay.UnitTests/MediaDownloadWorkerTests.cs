@@ -136,7 +136,7 @@ public sealed class MediaDownloadWorkerTests
             await WaitForQueueStateAsync(harness.Room, queueItem.Id, QueueItemState.Ready);
 
             // The per-attempt staging directory (including .part leftovers) is always deleted.
-            Assert.Empty(harness.StagingDirectories());
+            await WaitForStagingCleanupAsync(harness);
         }
         finally
         {
@@ -211,7 +211,7 @@ public sealed class MediaDownloadWorkerTests
             Assert.Equal(2, harness.YouTube.Attempts);
             Assert.Equal(2, job.AttemptCount);
             Assert.True(File.Exists(Path.Combine(harness.Root, "ytcache", VideoId + ".mp4")));
-            Assert.Empty(harness.StagingDirectories());
+            await WaitForStagingCleanupAsync(harness);
             Assert.Single(harness.Hub.Client.SongReadyEvents);
         }
         finally
@@ -325,6 +325,22 @@ public sealed class MediaDownloadWorkerTests
         }
 
         Assert.Fail($"Timed out waiting for queue item {queueItemId} to reach {expected}.");
+    }
+
+    /// <summary>
+    /// The completion ticket resolves inside <c>CompleteSuccessAsync</c> before the per-attempt
+    /// <c>finally</c> deletes staging, so success tests must wait for cleanup instead of asserting
+    /// the instant completion fires. AwaitingDownload gates only need the cache file, not staging.
+    /// </summary>
+    private static async Task WaitForStagingCleanupAsync(WorkerHarness harness)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (harness.StagingDirectories().Length > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Empty(harness.StagingDirectories());
     }
 
     private sealed class WorkerHarness : IAsyncDisposable

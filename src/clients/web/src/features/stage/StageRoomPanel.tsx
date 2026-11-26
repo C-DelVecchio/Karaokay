@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { SongSummaryDto } from '../../lib/signalr/protocol';
 import type { RemoteRoomState } from '../../lib/signalr/roomState';
+import { queueTitlesFromSongs, resolveQueueItemTitle } from '../remote/queueTitles';
 import type { StageRoomStatus } from './useStageRoom';
 
 interface StageRoomPanelProps {
@@ -18,7 +19,7 @@ interface StageRoomPanelProps {
  */
 export function StageRoomPanel({ status, room }: StageRoomPanelProps) {
   const snapshot = room.snapshot;
-  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [titles, setTitles] = useState<Map<string, string>>(() => new Map());
   const roomCode = snapshot?.roomCode;
 
   useEffect(() => {
@@ -39,18 +40,7 @@ export function StageRoomPanel({ status, room }: StageRoomPanelProps) {
           return;
         }
 
-        const next: Record<string, string> = {};
-        for (const song of songs) {
-          const title = song.title ?? 'Untitled';
-          if (song.id) {
-            next[song.id] = title;
-          }
-          if (song.enqueueId) {
-            next[song.enqueueId] = title;
-          }
-        }
-
-        setTitles(next);
+        setTitles(queueTitlesFromSongs(songs));
       } catch {
         // The queue falls back to requester names if the library endpoint is unavailable.
       }
@@ -84,7 +74,7 @@ export function StageRoomPanel({ status, room }: StageRoomPanelProps) {
         <ol className="stage-room-queue" aria-label="Up next">
           {room.queue.slice(0, 4).map((item) => (
             <li key={item.id}>
-              {titles[item.songId] ?? 'Song'} · {item.requestedByName || 'Guest'}
+              {resolveQueueItemTitle(item, titles)} · {item.requestedByName || 'Guest'}
             </li>
           ))}
         </ol>

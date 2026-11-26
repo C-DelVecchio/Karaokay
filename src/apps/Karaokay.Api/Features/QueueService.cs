@@ -893,6 +893,7 @@ public sealed partial class QueueService
     private static QueueItemDto ToDto(RoomQueueEntry entry) => new(
         entry.Id,
         entry.SongId,
+        entry.Song?.Title ?? string.Empty,
         entry.Position,
         entry.RequestedByName,
         ToWireState(entry.State));

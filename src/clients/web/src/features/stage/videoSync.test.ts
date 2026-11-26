@@ -5,13 +5,16 @@ import {
   HARD_NUDGE_MS,
   MEDIA_ERR_ABORTED,
   NETWORK_NO_SOURCE,
+  NO_SOURCE_FAILURE_MS,
   VIDEO_AUTOPLAY_MESSAGE,
   VIDEO_UNAVAILABLE_MESSAGE,
   expectedPositionMs,
+  isNoSourceStall,
   isYouTubePlayback,
   playRejectionNotice,
   videoCorrection,
   videoFailureNotice,
+  videoLoadRecovered,
   videoUrlForSong,
 } from './videoSync';
 import { stageTestClock } from './WebAudioEngine';
@@ -141,13 +144,39 @@ describe('video failure notices', () => {
     }))).toBeNull();
   });
 
-  it('maps a 404-style no-source failure even without a MediaError code', () => {
-    const notice = videoFailureNotice(snapshot({
-      networkState: NETWORK_NO_SOURCE,
-      readyState: 0,
-    }));
+  it('does not classify the pre-load window right after src assignment', () => {
+    // Chromium reports NETWORK_NO_SOURCE/readyState 0 synchronously after `src` + `load()`,
+    // before the fetch starts. One or two observations of that state are not a failure.
+    const preload = snapshot({ networkState: NETWORK_NO_SOURCE, readyState: 0 });
 
-    expect(notice?.kind).toBe('unavailable');
+    expect(isNoSourceStall(preload)).toBe(true);
+    expect(videoFailureNotice(preload)).toBeNull();
+    expect(videoFailureNotice(preload, NO_SOURCE_FAILURE_MS - 1)).toBeNull();
+  });
+
+  it('maps a durable 404-style no-source stall without a MediaError code', () => {
+    const stalled = snapshot({ networkState: NETWORK_NO_SOURCE, readyState: 0 });
+
+    expect(videoFailureNotice(stalled, NO_SOURCE_FAILURE_MS)?.kind).toBe('unavailable');
+  });
+
+  it('treats a decoded source as recovery from an unavailable verdict', () => {
+    const playing = snapshot({ networkState: 2, readyState: 4 });
+
+    expect(videoLoadRecovered(playing)).toBe(true);
+    expect(videoLoadRecovered(snapshot({ readyState: 0 }))).toBe(false);
+    expect(videoLoadRecovered(snapshot({ errorCode: 4, readyState: 4 }))).toBe(false);
+  });
+
+  it('recovers a transient no-source verdict once playback starts', () => {
+    const stalled = snapshot({ networkState: NETWORK_NO_SOURCE, readyState: 0 });
+    expect(videoFailureNotice(stalled, NO_SOURCE_FAILURE_MS)?.kind).toBe('unavailable');
+
+    // The same element once metadata/playback arrives must no longer report a failure and is
+    // flagged as recovered so the hook clears the outstanding card.
+    const playing = snapshot({ networkState: 1, readyState: 4 });
+    expect(videoFailureNotice(playing)).toBeNull();
+    expect(videoLoadRecovered(playing)).toBe(true);
   });
 
   it('does not call a still-loading element a failure', () => {

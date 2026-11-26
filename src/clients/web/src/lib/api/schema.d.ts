@@ -505,6 +505,7 @@ export interface components {
             id: string;
             /** Format: uuid */
             songId: string;
+            title: string;
             /** Format: int32 */
             position: number | string;
             requestedByName: string;

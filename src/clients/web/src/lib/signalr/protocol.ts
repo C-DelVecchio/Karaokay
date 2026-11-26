@@ -184,6 +184,7 @@ export interface JoinAck {
 export interface QueueItemDto {
   id: string;
   songId: string;
+  title: string;
   position: number;
   requestedByName: string;
   state: QueueItemState;

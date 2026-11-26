@@ -16,6 +16,7 @@ import {
 const firstItem: QueueItemDto = {
   id: '11111111-1111-4111-8111-111111111111',
   songId: '22222222-2222-4222-8222-222222222222',
+  title: 'Dancing Queen (Karaoke Version)',
   position: 0,
   requestedByName: 'Ada',
   state: QueueItemState.Ready,
@@ -24,6 +25,7 @@ const firstItem: QueueItemDto = {
 const secondItem: QueueItemDto = {
   id: '33333333-3333-4333-8333-333333333333',
   songId: '44444444-4444-4444-8444-444444444444',
+  title: 'Take On Me (Karaoke Version)',
   position: 1,
   requestedByName: 'Grace',
   state: QueueItemState.Ready,
@@ -90,6 +92,7 @@ describe('applyDelta', () => {
     const added: QueueItemDto = {
       id: '55555555-5555-4555-8555-555555555555',
       songId: '66666666-6666-4666-8666-666666666666',
+      title: 'Africa (Karaoke Version)',
       position: 1,
       requestedByName: 'Linus',
       state: QueueItemState.Ready,
@@ -232,6 +235,7 @@ describe('YouTube download state', () => {
       added: [{
         id: retriedId,
         songId: firstItem.songId,
+        title: firstItem.title,
         position: 2,
         requestedByName: 'Ada',
         state: QueueItemState.Downloading,

@@ -27,6 +27,7 @@ public sealed partial class YouTubeIngestionService
     private const int MaxTitleLength = 512;
     private const int MaxChannelLength = 512;
     private const int MaxThumbnailLength = 2048;
+    private const string FallbackTitle = "YouTube video";
 
     /// <summary>
     /// Bounded retries for the practically-unreachable window where the single-flight ticket
@@ -132,7 +133,7 @@ public sealed partial class YouTubeIngestionService
         }
 
         var videoId = request.VideoId;
-        var title = Clamp(request.Title, MaxTitleLength, "YouTube video");
+        var title = Clamp(request.Title, MaxTitleLength, FallbackTitle);
         var channel = Clamp(request.Channel, MaxChannelLength, string.Empty);
         var thumbnail = ClampNullable(request.ThumbnailUrl, MaxThumbnailLength);
         var durationMs = ToMilliseconds(request.DurationSeconds);
@@ -479,6 +480,7 @@ public sealed partial class YouTubeIngestionService
 
         if (song is not null)
         {
+            await RepairSongTitleAsync(database, song, title, cancellationToken).ConfigureAwait(false);
             return new SongLookup(song.Id, song.CachePath);
         }
 
@@ -508,10 +510,34 @@ public sealed partial class YouTubeIngestionService
             song = await database.Songs
                 .FirstAsync(candidate => candidate.VideoId == videoId, cancellationToken)
                 .ConfigureAwait(false);
+
+            // The losing request may have created a fallback-titled row before the winner's row
+            // became visible; repair it from the same real search-result title.
+            await RepairSongTitleAsync(database, song, title, cancellationToken).ConfigureAwait(false);
             LogDedupRace(_logger, videoId);
         }
 
         return new SongLookup(song.Id, song.CachePath);
+    }
+
+    /// <summary>
+    /// Repairs a stale or fallback-titled YouTube row from the current search result. A fallback
+    /// title never overwrites a real stored one, so concurrent callers cannot degrade a good row.
+    /// </summary>
+    private static async Task RepairSongTitleAsync(
+        KaraokayDbContext database,
+        Song song,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(title, FallbackTitle, StringComparison.Ordinal)
+            || string.Equals(song.Title, title, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        song.Title = title;
+        await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private string? TryResolveCachedFile(string? storedPath, string videoId)

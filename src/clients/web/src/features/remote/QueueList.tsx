@@ -11,6 +11,7 @@ import type {
   SongSummaryDto,
 } from '../../lib/signalr/protocol';
 import { firstMovableIndex, isQueueItemMovable } from './queueOrdering';
+import { queueTitlesFromSongs, resolveQueueItemTitle } from './queueTitles';
 
 const STATE_LABELS: Record<QueueItemState, string> = {
   0: 'Queued',
@@ -73,18 +74,11 @@ export function QueueList({
   onRemove,
   onRetry,
 }: QueueListProps) {
-  const titles = new Map<string, string>();
+  const titles = queueTitlesFromSongs(songs);
   const youtubeSongIds = new Set<string>();
   for (const song of songs) {
-    const title = song.title ?? 'Untitled';
-    if (song.id) {
-      titles.set(song.id, title);
-      if (song.source?.toLowerCase() === 'youtube') {
-        youtubeSongIds.add(song.id);
-      }
-    }
-    if (song.enqueueId) {
-      titles.set(song.enqueueId, title);
+    if (song.id && song.source?.toLowerCase() === 'youtube') {
+      youtubeSongIds.add(song.id);
     }
   }
 
@@ -133,7 +127,7 @@ export function QueueList({
       <h2 id="queue-heading">Queue</h2>
       <ol className="queue-list">
         {queue.map((item, index) => {
-          const label = titles.get(item.songId) ?? `Song ${item.songId.slice(0, 8)}`;
+          const label = resolveQueueItemTitle(item, titles);
           const movable = isQueueItemMovable(item.state);
           const download = downloads[item.id];
           const isYouTube = Boolean(download)

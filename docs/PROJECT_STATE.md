@@ -191,6 +191,15 @@ What landed:
   longer renders as a silent black stage: `useStageVideo` classifies media-source and play errors,
   and `StageShell` shows a visible "Video unavailable" card with Retry/Dismiss. Covered by
   `videoSync` unit tests and the `youtube-video-failure` Playwright spec.
+- **Queue titles (2026-11-26).** `QueueItemDto` now carries the song title in queue broadcasts and
+  snapshots, so phone/stage queue rows resolve the DTO title first, then the library join, and only
+  then the `Song {id}` placeholder. Enqueue also repairs stale dedup/cache-hit rows from the real
+  search-result title (a fallback title never overwrites a real one); no schema change because
+  `Song.Title` already existed.
+- **Stage false-unavailable fix (2026-11-26).** A transient `NETWORK_NO_SOURCE`/`readyState 0`
+  window immediately after `src` assignment no longer flashes the "Video unavailable" card: the
+  code-less no-source state must persist for 1 s, and a later decoded source self-heals the notice.
+  The happy-path `youtube.spec.ts` e2e now records any transient card mount.
 - **Tests.** Unit coverage for video-id validation, yt-dlp JSON/progress parsing, argument arrays,
   coalescing, worker transitions, and temp cleanup; integration coverage with a deterministic
   `FakeYouTubeService` (search, dedup, SignalR progress/`SongReady`, 206 range serving); Vitest for
@@ -897,12 +906,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (248 passing; 29 Docker-gated skips locally; 277 with Docker)
+dotnet test           # run unit, integration, and architecture tests (249 passing; 29 Docker-gated skips locally; 278 with Docker)
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **248 passed / 29 skipped** on a Docker-less machine (206 unit, 11 architecture, 31 integration); with Docker available the full suite is **277 passed / 0 skipped**, and CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **249 passed / 29 skipped** on a Docker-less machine (206 unit, 11 architecture, 32 integration); with Docker available the full suite is **278 passed / 0 skipped**, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a

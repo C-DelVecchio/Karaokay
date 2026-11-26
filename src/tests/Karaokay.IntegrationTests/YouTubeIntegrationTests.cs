@@ -27,6 +27,7 @@ public sealed class YouTubeIntegrationTests :
     IClassFixture<YouTubeNoDatabaseApiFixture>
 {
     private const string SearchEvent = "SearchCompleted";
+    private const string QueueChangedEvent = "QueueChanged";
     private const string DownloadProgressEvent = "DownloadProgressChanged";
     private const string SongReadyEvent = "SongReady";
     private const string DownloadFailedEvent = "DownloadFailed";
@@ -252,6 +253,8 @@ public sealed class YouTubeIntegrationTests :
         var rows = snapshot.Queue.Where(item => item.SongId == snapshot.Queue[0].SongId).ToArray();
         Assert.Equal(2, rows.Length);
         Assert.All(rows, row => Assert.Equal(QueueItemState.Ready, row.State));
+        // The second row is a cache hit; it must still expose the search-result title.
+        Assert.All(rows, row => Assert.Equal("Dedup Song", row.Title));
         Assert.Equal(snapshot.Queue[0].SongId, snapshot.Queue[1].SongId);
 
         Assert.Equal(1, _fixture.YouTube.DownloadsByVideo[videoId]);
@@ -273,6 +276,7 @@ public sealed class YouTubeIntegrationTests :
         // which this fixture keeps outside the media root.
         Assert.Equal(videoId + ".mp4", song.CachePath);
         Assert.Equal(FakeYouTubeService.SampleVideoSize, song.FileSizeBytes);
+        Assert.Equal("Dedup Song", song.Title);
     }
 
     [SkippableFact]
@@ -287,9 +291,13 @@ public sealed class YouTubeIntegrationTests :
         await using var connection = await ConnectAsync().ConfigureAwait(false);
         Assert.True((await JoinAsync(connection, room.Code, "Ada", "guest").ConfigureAwait(false)).Success);
 
+        var queueUpdates = new ConcurrentQueue<QueueDelta>();
         var progress = new ConcurrentQueue<DownloadProgressDto>();
         var ready = new ConcurrentQueue<SongReadyDto>();
         var failed = new ConcurrentQueue<DownloadFailedDto>();
+        using var queueSubscription = connection.On<QueueDelta>(
+            QueueChangedEvent,
+            sample => queueUpdates.Enqueue(sample));
         using var progressSubscription = connection.On<DownloadProgressDto>(
             DownloadProgressEvent,
             sample => progress.Enqueue(sample));
@@ -305,6 +313,14 @@ public sealed class YouTubeIntegrationTests :
             new YouTubeQueueRequest(videoId, "Hub Progress Song", "Karaokay CI", 60))
             .ConfigureAwait(false);
         Assert.True(ack.Success);
+
+        var queueDelta = await WaitForSingleAsync(
+            queueUpdates,
+            delta => delta.Added.Any(item => item.Id == ack.QueueItemId),
+            TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.Equal(
+            "Hub Progress Song",
+            queueDelta.Added.Single(item => item.Id == ack.QueueItemId).Title);
 
         var readyEvent = await WaitForSingleAsync(
             ready,
@@ -323,9 +339,36 @@ public sealed class YouTubeIntegrationTests :
         Assert.Empty(failed);
 
         var snapshot = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        var queued = snapshot.Queue.Single(item => item.Id == ack.QueueItemId);
+        Assert.Equal(QueueItemState.Ready, queued.State);
+        Assert.Equal("Hub Progress Song", queued.Title);
+
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<KaraokayDbContext>();
+        var song = await database.Songs
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.VideoId == videoId)
+            .ConfigureAwait(false);
+        Assert.Equal("Hub Progress Song", song.Title);
+    }
+
+    [SkippableFact]
+    public async Task EnqueueWithoutDatabaseExposesTheTitleInTheQueueSnapshot()
+    {
+        // No database: /api/songs cannot discover a newly ingested YouTube row, so the queue DTO
+        // itself must carry the search-result title instead of relying on the library join.
+        using var http = _noDatabase.Factory.CreateClient();
+        var room = await CreateRoomAsync(http).ConfigureAwait(false);
+
+        var ack = await EnqueueAsync(http, room.Code, "noDbTitle01", "No Database Song")
+            .ConfigureAwait(false);
+        await WaitForQueueStateAsync(http, room.Code, ack.QueueItemId, QueueItemState.Ready)
+            .ConfigureAwait(false);
+
+        var snapshot = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
         Assert.Equal(
-            QueueItemState.Ready,
-            snapshot.Queue.Single(item => item.Id == ack.QueueItemId).State);
+            "No Database Song",
+            snapshot.Queue.Single(item => item.Id == ack.QueueItemId).Title);
     }
 
     [SkippableFact]

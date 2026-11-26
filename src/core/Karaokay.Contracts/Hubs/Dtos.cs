@@ -28,6 +28,7 @@ public sealed record RoomSnapshot(
 public sealed record QueueItemDto(
     Guid Id,
     Guid SongId,
+    string Title,
     int Position,
     string RequestedByName,
     QueueItemState State);
