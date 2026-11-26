@@ -64,7 +64,8 @@
         { "action": "shell", "resource": "curl *", "effect": "allow" },
         { "action": "shell", "resource": "sleep *", "effect": "allow" },
         { "action": "shell", "resource": "pkill *", "effect": "allow" },
-        { "action": "shell", "resource": "ss *", "effect": "allow" }
+        { "action": "shell", "resource": "ss *", "effect": "allow" },
+        { "action": "shell", "resource": "sg docker -c *", "effect": "allow" }
       ]
     },
     "native-coder": {
