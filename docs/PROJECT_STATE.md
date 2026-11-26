@@ -14,7 +14,8 @@ This is a guided tour of **what Karaokay is, what exists today, how the pieces f
   the §5.3 clock offset are all live. Slice 3 review M4/M5 are closed; M2/M3 stay open. See
   [ADR-008](adr/008-slice-4-playback-authority-decisions.md).
 - **Next up:** Slice 6a (Azure free-tier deployment and CI/CD); Slice 6b (self-hosted Proxmox LXC
-  deployment) is fully specced in [`docs/self-hosting.md`](self-hosting.md) and pending implementation
+  deployment plus the dev-mode LAN phone flow: `dev:lan` + the `changeOrigin: false` proxy fix) is
+  fully specced in [`docs/self-hosting.md`](self-hosting.md) and pending implementation.
 - **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.3
 - **Slice 1 beginner guide:** [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md)
 - **Slice 2 learning snapshot:**
@@ -63,7 +64,7 @@ A **vertical slice** is a small, complete feature that cuts through every layer 
 | 4 | Playback authority, clock sync, browser video mode | ✅ Complete |
 | 5 | Zero-key YouTube search and `yt-dlp` downloads | ✅ Complete early (in `324da8a`); hardening landed in follow-up |
 | 6a | Azure free-tier deployment and CI/CD | Planned |
-| 6b | Self-hosted Proxmox LXC, systemd, NPM reverse proxy | Planned (specced in [`docs/self-hosting.md`](self-hosting.md)) |
+| 6b | Self-hosted Proxmox LXC, systemd, NPM reverse proxy + dev-LAN phone flow | Planned (specced in [`docs/self-hosting.md`](self-hosting.md)) |
 | 7 | Android C++ Oboe audio engine | Planned |
 | 8 | Android TV SkiaSharp stage and hardening | Planned |
 
@@ -327,7 +328,8 @@ Do not look for these:
   any guest with the code can claim it until a stage secret or one-stage-per-room claim lands.
 - **Deployment.** Neither Slice 6a nor Slice 6b exists yet: no Bicep files or deploy workflow, no
   live Azure URL, no Proxmox LXC creation/provisioning scripts, no `karaokay-api.service`, and no
-  provisioned self-host stack. Both modes are specified in
+  provisioned self-host stack. The dev-mode LAN flow is also not built: no `npm run dev:lan` script
+  and the Vite proxy still uses `changeOrigin: true`. Both modes are specified in
   [`docs/ARCHITECTURE.md` §7](ARCHITECTURE.md#7-phased-vertical-slice-implementation-roadmap); the
   self-host operator guide is [`docs/self-hosting.md`](self-hosting.md) (planned, Slice 6b).
 - **Android anything.** No `net10.0-android` app, C++ Oboe engine, or SkiaSharp renderer.
@@ -523,7 +525,10 @@ sends; `GET /api/rooms/{code}/qr` renders the phone join URL as a PNG with `QRCo
 prefers a configured `PublicBaseUrl` and otherwise trusts the request scheme/host — a known
 reverse-proxy caveat recorded in the review. Slice 6b (self-hosted NPM) adds `UseForwardedHeaders`
 and pins both the forwarded-host and `PublicBaseUrl` precedence in `QrJoinUrlTests`; the current
-code still has neither middleware nor a production deployment.
+code still has neither middleware nor a production deployment. For local dev, Slice 6b also flips
+the Vite proxy to `changeOrigin: false` (with a new `npm run dev:lan`), so a stage loaded via
+`http://<dev-LAN-IP>:5173/stage` derives that host automatically instead of needing
+`PublicBaseUrl`; under plain `npm run dev` the QR correctly derives `localhost:5173`.
 
 #### `Hubs/StageHub.cs`
 
@@ -1135,7 +1140,8 @@ contract tests have **landed** in a follow-up change. See §2.4 and the
 Slice 6a deploys the public demo to Azure free tiers. Slice 6b provisions the real self-hosted
 deployment: one unprivileged Debian LXC on Proxmox VE running bare-metal systemd services behind
 the operator's existing Nginx Proxy Manager (TLS via Let's Encrypt + DuckDNS), with the API serving
-the built SPA from `wwwroot`; it is fully specced in [`docs/self-hosting.md`](self-hosting.md).
+the built SPA from `wwwroot`; it also adds the first-class dev-mode LAN phone flow (`npm run
+dev:lan` plus `changeOrigin: false`). It is fully specced in [`docs/self-hosting.md`](self-hosting.md).
 Slices 7–8 build the Android TV stage: a C++ Oboe engine, then a SkiaSharp renderer consuming the
 same golden decision fixtures as the web.
 

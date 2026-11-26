@@ -329,6 +329,9 @@ Manual, from a clean Proxmox host (mirrors the Slice 6b Definition of Done):
 - [ ] A phone **on the LAN** scans the stage QR and joins.
 - [ ] A phone **off-network (cellular)** scans the same QR, joins, queues a demo song, and the
       stage plays it end-to-end.
+- [ ] Dev-mode: `npm run dev:lan` on the dev machine is reachable from a phone on the same LAN;
+      opening `http://<dev-LAN-IP>:5173/stage` and scanning the QR decodes to
+      `http://<dev-LAN-IP>:5173/remote?code=…`, and the join-sing flow completes end-to-end.
 - [ ] A foreign origin is rejected by CORS; the public origin is accepted.
 - [ ] PostgreSQL is unreachable from another LAN host; `5255` is unreachable except from NPM.
 - [ ] `pg_dump` and a media-directory archive restore into a scratch database/directory.
@@ -395,24 +398,49 @@ Proxmox and NPM and prefers `systemctl` over container orchestration. See
 
 ## 14. For developers: testing from a real phone
 
-The Vite dev server is **loopback by default**: `npm run dev` binds `localhost:5173` (preview
-binds `4173`), and `vite.config.ts` proxies `/api` and `/hubs` to `127.0.0.1:5255` with
-`changeOrigin: true`. That proxy rewrite is why a QR generated through the dev server can encode
-`127.0.0.1:5255` — a documented caveat from the
-[Slice 3 walkthrough](learning/slice-3-walkthrough.md#46-roomsendpoints--create-snapshot-qr) — and
-a phone on the LAN cannot reach the loopback dev server anyway.
+**Production self-host remains the recommended way to use real phones** (§1–§13): it serves the
+built SPA from the API, gives the phone a stable address, and works off-network.
 
-**Real-phone LAN testing belongs to the self-host deployment**: build the SPA, serve it from the
-API's `wwwroot`, and point `PublicBaseUrl` at the phone-reachable address
-(`http://<lxc-ip>:5255` on the LAN, or the public https URL). The stage QR then encodes an address
-the phone can actually open.
+Before Slice 6b, the dev stack is loopback by default: `npm run dev` binds `localhost:5173`
+(preview binds `4173`), and `vite.config.ts` proxies `/api` and `/hubs` to
+`http://127.0.0.1:5255` with `changeOrigin: true`. That rewrite makes the API see the proxy target
+(`127.0.0.1:5255`), so a dev QR can encode `127.0.0.1:5255` — the caveat recorded in the
+[Slice 3 walkthrough](learning/slice-3-walkthrough.md#46-roomsendpoints--create-snapshot-qr). A
+phone on the LAN can reach neither the loopback dev server nor that loopback API address.
 
-A documented **dev-only workaround** is `npm run dev -- --host 0.0.0.0` (or `vite --host`) plus:
+### Dev-mode LAN flow (Slice 6b)
+
+Slice 6b adds a first-class dev flow:
+
+- `npm run dev:lan` runs `vite --host 0.0.0.0`. The default `dev` binding, the preview
+  port/binding, and existing Playwright outcomes are unchanged (no spec asserts QR payloads),
+  though preview's proxied `Host` also changes.
+- `vite.config.ts` flips the `apiProxy` entries for `/api` and `/hubs` to `changeOrigin: false`
+  (both `server` and `preview` use the same proxy object). The API now receives the browser's
+  original `Host` header, so `RoomsEndpoints.BuildJoinUrl`'s request-host fallback derives
+  `http://<dev-LAN-IP>:5173/remote?code=…` with **no `PublicBaseUrl` in dev**.
+- The phone loads `http://<dev-LAN-IP>:5173/stage` and `/remote` from the same Vite origin; `/api`
+  and `/hubs` (WebSockets via `ws: true`) are proxied to the loopback API. The API binding and the
+  CORS allow-list stay loopback-only and unchanged.
+- `PublicBaseUrl` still takes precedence when set, which is what the production/self-host path uses.
+
+Usage:
 
 ```bash
-PublicBaseUrl=http://<workstation-lan-ip>:5173
+# terminal 1: API
+dotnet run --project src/apps/Karaokay.Api
+# terminal 2: web client bound to all interfaces
+cd src/clients/web
+npm run dev:lan
+# phone: open http://<dev-machine-LAN-IP>:5173/stage
 ```
 
-With `changeOrigin: true`, request-derived host values still reflect the proxy target, not the
-phone-visible origin; setting `PublicBaseUrl` is therefore required for a correct QR during dev.
-This is a convenience for quick manual checks, not a substitute for the production self-host path.
+Caveats:
+
+- The dev machine's LAN IP can change under DHCP; re-scan the QR (or use a DHCP reservation) after
+  a change.
+- The OS firewall may prompt to allow Node/Vite; if it is denied, the phone cannot connect.
+- `dev:lan` is for a **trusted home LAN only** — never port-forward the Vite port.
+- LAN access uses the raw IP, so Vite's default Host check is satisfied and no `allowedHosts`
+  config is needed. If you later want a LAN hostname, add it to `server.allowedHosts` and use that
+  hostname consistently.

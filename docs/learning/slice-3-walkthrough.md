@@ -551,6 +551,9 @@ reverse proxy without forwarded-header handling, that can produce an internal ho
 cannot reach. This is a documented nit, not a Slice 3 bug; `QrJoinUrlTests` pins the precedence and
 the absolute-URL shape.
 
+> *Note (2026-11-26): the Slice 6b spec (`docs/ARCHITECTURE.md`) plans a dev-mode fix (`dev:lan` +
+> `changeOrigin: false`) so dev QRs derive the browser host automatically.*
+
 The PNG is rendered with `QRCodeGenerator.ECCLevel.Q` and `PngByteQRCode.GetGraphic(10)`, and served
 with `Cache-Control: no-store` because the payload is tied to a live code.
 

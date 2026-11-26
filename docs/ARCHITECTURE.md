@@ -1046,9 +1046,24 @@ Each slice below specifies files to create, required tests, and a copy-paste
   still wins when both are present.
 - `src/clients/web/e2e/selfhost-production.spec.ts`: Playwright smoke against the API serving a
   production `wwwroot` bundle (no Vite dev proxy) with `PublicBaseUrl` set.
+- Dev-mode LAN phone flow: `src/clients/web/package.json` gains
+  `"dev:lan": "vite --host 0.0.0.0"` (the default `"dev": "vite"` stays loopback-bound; the
+  preview port/binding and existing Playwright outcomes are unchanged because no spec asserts QR
+  payloads, though preview's proxied `Host` also changes); `src/clients/web/vite.config.ts` flips
+  the shared `apiProxy` entries for `/api` and `/hubs` from `changeOrigin: true` to
+  `changeOrigin: false` (the same proxy object feeds `server` and `preview`), so the API receives
+  the browser's original `Host` and `BuildJoinUrl`'s request-host fallback encodes
+  `http://<dev-LAN-IP>:5173/remote?code=…` with no `PublicBaseUrl` in dev. `ws: true` stays on
+  `/hubs`; phone traffic remains same-origin through the Vite proxy, so the API stays
+  loopback-bound and the loopback-only CORS allow-list is unchanged. `PublicBaseUrl` still wins
+  when set (production/self-host path). Caveats documented in `docs/self-hosting.md`: DHCP LAN-IP
+  changes, OS firewall prompting for Node, trusted home LAN only (never port-forward), and Vite
+  `allowedHosts` if a LAN hostname is used instead of the raw IP (the raw IP needs no config).
 - `docs/self-hosting.md`: the full operator guide (architecture diagram, LXC creation, NPM proxy
   host + Let's Encrypt/DuckDNS, configuration, update/backup/troubleshooting, $0 cost table,
-  secondary Docker Compose path, and developer LAN-testing notes).
+  secondary Docker Compose path, and the first-class developer `dev:lan` LAN-testing flow).
+- `docs/learning/slice-3-walkthrough.md`: additive dated note that Slice 6b plans the `dev:lan` +
+  `changeOrigin: false` dev-mode fix (no historical prose rewritten).
 - Firewall: ufw in the LXC allows `5255/tcp` **only** from the NPM LXC; an optional Proxmox-host
   rule for local health checks is documented as optional everywhere. PostgreSQL binds
   `127.0.0.1:5432` only; optionally enforce the same rule at the Proxmox firewall level. No
@@ -1062,6 +1077,10 @@ Each slice below specifies files to create, required tests, and a copy-paste
 - AppHost config/integration: assert the Postgres password parameter has no committed literal and
   is sourced from user secrets/Aspire input, and that the API still starts and migrates against
   PostgreSQL with the supplied value after the data volume is reinitialized.
+- Dev-mode LAN: `QrJoinUrlTests` already pins the empty/whitespace `PublicBaseUrl` →
+  `Request.Scheme`/`Request.Host` fallback (including a `127.0.0.1:5255` case), so no new unit
+  assertion is required; the `changeOrigin: false` flow is covered by the manual checklist item
+  below, and the existing Playwright preview suite must stay green unchanged.
 - Playwright: load `/stage` from the locally served production bundle, create a room, decode the
   QR and assert it encodes the configured absolute `https://…/remote?code=...` URL, then join
   `/remote?code=...` from a second browser context and queue a demo song.
@@ -1072,7 +1091,9 @@ Each slice below specifies files to create, required tests, and a copy-paste
   checklist): from a clean Proxmox host one command creates the LXC; an NPM proxy host issues a
   Let's Encrypt DuckDNS certificate and has websockets ON; a phone on the LAN scans the stage QR
   and joins; a phone **off-network (cellular)** scans the same QR, joins, queues, and sings
-  end-to-end.
+  end-to-end. Dev-mode item: `npm run dev:lan` on the dev machine is reachable from a phone on the
+  same LAN; the stage QR decodes to `http://<dev-LAN-IP>:5173/remote?code=…` and the join-sing flow
+  completes; the default `npm run dev` remains loopback-bound.
 
 **Definition of Done**
 
@@ -1094,7 +1115,12 @@ Each slice below specifies files to create, required tests, and a copy-paste
 > documented as optional) and blocks direct database access; (7) `docs/self-hosting.md` documents
 > the complete guide — LXC creation, NPM proxy-host
 > configuration, configuration, update procedure, `pg_dump` + media-directory backups,
-> troubleshooting, the secondary Docker Compose alternative, and a cost table proving $0/month."
+> troubleshooting, the secondary Docker Compose alternative, and a cost table proving $0/month;
+> (8) `npm run dev:lan` on the dev machine is reachable from a phone on the same LAN; with the
+> stage loaded via `http://<dev-LAN-IP>:5173/stage`, the QR encodes
+> `http://<dev-LAN-IP>:5173/remote?code=…`, and the join-sing flow completes end-to-end with the
+> API and CORS unchanged (loopback-only); under plain `npm run dev` the QR correctly derives
+> `localhost:5173`, and existing Playwright/preview outcomes are unaffected."
 
 ---
 
