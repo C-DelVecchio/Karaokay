@@ -12,12 +12,22 @@ import type { Pong } from './protocol';
  * serverNow ≈ localNow + clockOffset
  * ```
  *
- * The median of the last 8 samples is the offset. Median filtering is what makes an occasional
- * slow/queued response harmless: one outlier cannot drag the estimate by more than half a window.
+ * Alignment uses the best-of-window sample: the lowest-RTT sample inside the last 8. A sample whose
+ * RTT was inflated by a main-thread stall (stem decode, garbage collection) is rejected outright,
+ * because a stall on either side of the exchange shifts the computed offset by roughly half the
+ * stall. Taking the minimum RTT is the standard NTP robustness trick and is what keeps the startup
+ * burst from poisoning the estimate while the stage is decoding its stems.
+ *
+ * Fewer than {@link CLOCK_SYNC_MIN_ACCEPTED_SAMPLES} accepted samples is not enough evidence to
+ * shift a playback start, so the filter reports no offset and callers fall back to the room-state
+ * anchor measured at receipt (see {@link receiptAnchorOffsetMs}).
  */
 
-/** Samples retained for the median (the documented 8-sample filter). */
+/** Samples retained for the best-of-window selection (the documented 8-sample filter). */
 export const CLOCK_SYNC_SAMPLE_COUNT = 8;
+
+/** At least two independent exchanges must agree before the offset is trusted for alignment. */
+export const CLOCK_SYNC_MIN_ACCEPTED_SAMPLES = 2;
 
 /** Steady-state sampling cadence once the startup burst has filled the window. */
 export const CLOCK_SYNC_INTERVAL_MS = 5_000;
@@ -32,9 +42,18 @@ export const CLOCK_SYNC_WARMUP_SPACING_MS = 500;
 
 /**
  * A response slower than this is almost certainly a stalled/aborted invocation rather than a
- * useful measurement, so its offset is discarded instead of polluting the median.
+ * useful measurement, so its offset is discarded instead of polluting the window. This is the
+ * second, looser gate: {@link CLOCK_SYNC_MAX_ALIGNMENT_RTT_MS} is the tight one applied to
+ * alignment samples.
  */
 export const CLOCK_SYNC_MAX_RTT_MS = 5_000;
+
+/**
+ * Samples slower than this are not usable for alignment. RTTs on a healthy link are a few ms; an
+ * RTT in the hundreds of ms means a main-thread stall (stem decode, GC, layout) swallowed part of
+ * the exchange, and halving that stall into the offset would misalign the start by hundreds of ms.
+ */
+export const CLOCK_SYNC_MAX_ALIGNMENT_RTT_MS = 250;
 
 export interface ClockSample {
   /** `t2 − (t1 + RTT / 2)`, i.e. how far the local clock is behind the server. */
@@ -77,7 +96,12 @@ export function computeClockSample(
   };
 }
 
-/** Median of a numeric list; empty input yields 0. */
+/**
+ * Median of a numeric list; empty input yields 0.
+ *
+ * Test-only: production offset selection is `ClockOffsetFilter.bestSample`, a minimum-RTT
+ * best-of-window pick. This helper is retained (and exercised) only by the clock-sync unit tests.
+ */
 export function median(values: readonly number[]): number {
   if (values.length === 0) {
     return 0;
@@ -90,14 +114,45 @@ export function median(values: readonly number[]): number {
     : sorted[middle];
 }
 
-/** Applies the median offset to a local timestamp. */
+/** Applies the estimated offset to a local timestamp. */
 export function serverNowMs(localNowMs: number, offsetMs: number): number {
   return localNowMs + offsetMs;
 }
 
 /**
- * Rolling 8-sample median filter. Fewer than two samples reports an offset of 0, which degrades
- * cleanly to the historical local-wall-clock behavior until the exchange has actually worked.
+ * Offset implied by a room-state playback message received at `receivedAtLocalMs`.
+ *
+ * `anchorServerMs` is the server timestamp (`timeAnchorUtc`) at which the message's `positionMs`
+ * was measured. Using `anchorServerMs − receivedAtLocalMs` as the clock offset makes the playback
+ * position extrapolate from the *local receipt instant* instead of the server anchor:
+ *
+ * ```
+ * position = positionMs + (serverNow − anchorServerMs)
+ *          = positionMs + (localNow − receivedAtLocalMs)
+ * ```
+ *
+ * The unknown clock offset cancels, leaving only the one-way transit delay as error. That is the
+ * fallback used until the Ping/Pong filter is confident enough to trust its estimate.
+ */
+export function receiptAnchorOffsetMs(
+  anchorServerMs: number,
+  receivedAtLocalMs: number,
+): number | null {
+  if (!Number.isFinite(anchorServerMs) || !Number.isFinite(receivedAtLocalMs)) {
+    return null;
+  }
+
+  return anchorServerMs - receivedAtLocalMs;
+}
+
+/**
+ * Rolling 8-sample best-of-window filter.
+ *
+ * Samples with an RTT above {@link CLOCK_SYNC_MAX_ALIGNMENT_RTT_MS} are rejected, and the offset is
+ * taken from the lowest-RTT sample in the window (ties prefer the newest sample so a window of
+ * equally fast samples still tracks the current estimate). Fewer than
+ * {@link CLOCK_SYNC_MIN_ACCEPTED_SAMPLES} accepted samples reports an offset of 0, which degrades
+ * cleanly to the receipt-anchor fallback until the exchange has actually worked.
  */
 export class ClockOffsetFilter {
   private readonly samples: ClockSample[] = [];
@@ -108,9 +163,13 @@ export class ClockOffsetFilter {
     }
   }
 
-  /** Adds a sample (null is ignored) and trims the window to `capacity`. */
+  /** Adds a sample (null and stall-biased samples are rejected) and trims the window. */
   add(sample: ClockSample | null): boolean {
-    if (!sample) {
+    if (!sample || !Number.isFinite(sample.rttMs) || sample.rttMs < 0) {
+      return false;
+    }
+
+    if (sample.rttMs > CLOCK_SYNC_MAX_ALIGNMENT_RTT_MS) {
       return false;
     }
 
@@ -126,17 +185,30 @@ export class ClockOffsetFilter {
     return this.samples.length;
   }
 
+  /** True once enough independent exchanges have landed to trust the offset for alignment. */
+  get confident(): boolean {
+    return this.samples.length >= CLOCK_SYNC_MIN_ACCEPTED_SAMPLES;
+  }
+
+  /** Lowest-RTT sample in the window (newest wins ties), or null when empty. */
+  get bestSample(): ClockSample | null {
+    let best: ClockSample | null = null;
+    for (const sample of this.samples) {
+      if (best === null || sample.rttMs <= best.rttMs) {
+        best = sample;
+      }
+    }
+
+    return best;
+  }
+
   /** Snapshot copy, oldest first. */
   get window(): readonly ClockSample[] {
     return [...this.samples];
   }
 
   get offsetMs(): number {
-    if (this.samples.length < 2) {
-      return 0;
-    }
-
-    return median(this.samples.map((sample) => sample.offsetMs));
+    return this.confident ? this.bestSample?.offsetMs ?? 0 : 0;
   }
 
   reset(): void {
@@ -145,15 +217,20 @@ export class ClockOffsetFilter {
 }
 
 export interface ClockSyncSamplerOptions {
-  /** One Ping invocation (normally `stageClient.ping`). */
-  ping: (t1: number) => Promise<Pong>;
+  /**
+   * One Ping invocation. The transport must stamp `t1` as late as possible — immediately before
+   * flushing the frame — and return the echoed {@link Pong}. The sampler deliberately does not
+   * stamp the send itself: a timestamp taken before an await would include any main-thread stall
+   * that happens before the frame actually leaves the browser.
+   */
+  ping: () => Promise<Pong>;
   /** Local monotonic-ish millisecond clock; injectable for tests. Defaults to `Date.now`. */
   now?: () => number;
   intervalMs?: number;
   warmupSamples?: number;
   warmupSpacingMs?: number;
-  /** Called after every accepted sample with the current median offset. */
-  onChange?: (offsetMs: number) => void;
+  /** Called after every accepted sample with the current best-of-window offset. */
+  onChange?: (offsetMs: number, confident: boolean) => void;
 }
 
 /**
@@ -168,17 +245,18 @@ export interface ClockSyncSamplerOptions {
 export class ClockSyncSampler {
   readonly filter = new ClockOffsetFilter();
 
-  private readonly ping: (t1: number) => Promise<Pong>;
+  private readonly ping: () => Promise<Pong>;
   private readonly now: () => number;
   private readonly intervalMs: number;
   private readonly warmupSamples: number;
   private readonly warmupSpacingMs: number;
-  private readonly onChange: ((offsetMs: number) => void) | undefined;
+  private readonly onChange: ((offsetMs: number, confident: boolean) => void) | undefined;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private inFlightGeneration: number | null = null;
   private active = false;
+  private exchanges = 0;
 
   constructor(options: ClockSyncSamplerOptions) {
     this.ping = options.ping;
@@ -197,6 +275,11 @@ export class ClockSyncSampler {
     return this.filter.offsetMs;
   }
 
+  /** True once the filter has enough accepted samples to trust for playback alignment. */
+  get confident(): boolean {
+    return this.filter.confident;
+  }
+
   start(): void {
     if (this.active) {
       return;
@@ -204,6 +287,7 @@ export class ClockSyncSampler {
 
     this.active = true;
     this.generation += 1;
+    this.exchanges = 0;
     this.schedule(0);
   }
 
@@ -218,9 +302,10 @@ export class ClockSyncSampler {
 
   /** Performs exactly one Ping/Pong exchange without touching the timer or the filter. */
   async sampleOnce(): Promise<ClockSample | null> {
-    const sentAtMs = this.now();
-    const pong = await this.ping(sentAtMs);
-    return computeClockSample(sentAtMs, pong, this.now());
+    const pong = await this.ping();
+    // `pong.t1` is the timestamp the transport recorded immediately before the flush; computing
+    // the RTT from it excludes any stall that happened before the frame was actually sent.
+    return computeClockSample(pong?.t1, pong, this.now());
   }
 
   private schedule(delayMs: number): void {
@@ -261,12 +346,18 @@ export class ClockSyncSampler {
     }
 
     if (this.filter.add(sample)) {
-      this.onChange?.(this.filter.offsetMs);
+      this.onChange?.(this.filter.offsetMs, this.filter.confident);
     }
 
-    // Only a successful sample advances the startup burst. A failed invocation backs off to the
-    // steady-state cadence so an unreachable connection is never pinged in a tight loop.
-    const nextDelay = sample !== null && this.filter.count < this.warmupSamples
+    if (sample !== null) {
+      this.exchanges += 1;
+    }
+
+    // Only a successful exchange advances the startup burst. A failed invocation backs off to the
+    // steady-state cadence so an unreachable connection is never pinged in a tight loop. Rejected
+    // (stall-biased) samples still count as exchanges so a persistently slow link cannot pin the
+    // sampler to the 500 ms burst forever.
+    const nextDelay = sample !== null && this.exchanges < this.warmupSamples
       ? this.warmupSpacingMs
       : this.intervalMs;
     this.schedule(nextDelay);

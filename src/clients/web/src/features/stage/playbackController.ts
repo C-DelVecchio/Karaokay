@@ -45,8 +45,8 @@ export interface RoomPlaybackStatus {
   lyrics: LyricsDocument | null;
   countdownBeats: number | null;
   error: string | null;
-  /** One-time `expectedMs − audioPositionMs` measured when the stage joined the song. */
-  anchorCorrectionMs: number | null;
+  /** `expectedMs − audioPositionMs`: how far the engine must seek from its current position. */
+  seekOffsetMs: number | null;
 }
 
 export function emptyRoomPlaybackStatus(): RoomPlaybackStatus {
@@ -58,7 +58,7 @@ export function emptyRoomPlaybackStatus(): RoomPlaybackStatus {
     lyrics: null,
     countdownBeats: null,
     error: null,
-    anchorCorrectionMs: null,
+    seekOffsetMs: null,
   };
 }
 
@@ -96,15 +96,15 @@ export interface AudioStartPlan {
   expectedMs: number;
   /** Local audio clock reading used for the one-time correction. */
   audioPositionMs: number;
-  /** `expectedMs − audioPositionMs`, the one-time calibration correction. */
-  anchorCorrectionMs: number;
+  /** `expectedMs − audioPositionMs`, the amount the engine is asked to seek. */
+  seekOffsetMs: number;
   /** Buffer offset handed to `WebAudioEngine.start()`. */
   startOffsetMs: number;
 }
 
 /**
  * Plans a one-time audio (re)start at the authoritative position. Passing the current audio
- * position lets a resume express its correction explicitly; a fresh start passes 0.
+ * position lets a resume express its seek offset explicitly; a fresh start passes 0.
  */
 export function planAudioStart(
   playback: PlaybackStateDto | null | undefined,
@@ -114,14 +114,14 @@ export function planAudioStart(
 ): AudioStartPlan {
   const expectedMs = Math.max(0, authoritativePositionMs(playback, nowMs));
   const safeAudioPositionMs = Math.max(0, Number.isFinite(audioPositionMs) ? audioPositionMs : 0);
-  const anchorCorrectionMs = expectedMs - safeAudioPositionMs;
+  const seekOffsetMs = expectedMs - safeAudioPositionMs;
   const duration = typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
     ? durationMs
     : null;
   const maxOffsetMs = duration !== null ? Math.max(0, duration - AUDIO_END_MARGIN_MS) : Number.POSITIVE_INFINITY;
-  const startOffsetMs = Math.min(maxOffsetMs, Math.max(0, safeAudioPositionMs + anchorCorrectionMs));
+  const startOffsetMs = Math.min(maxOffsetMs, Math.max(0, safeAudioPositionMs + seekOffsetMs));
 
-  return { expectedMs, audioPositionMs: safeAudioPositionMs, anchorCorrectionMs, startOffsetMs };
+  return { expectedMs, audioPositionMs: safeAudioPositionMs, seekOffsetMs, startOffsetMs };
 }
 
 export interface PlaybackDecisionInput {
@@ -248,7 +248,7 @@ function sameStatus(left: RoomPlaybackStatus, right: RoomPlaybackStatus): boolea
     && left.lyrics === right.lyrics
     && left.countdownBeats === right.countdownBeats
     && left.error === right.error
-    && left.anchorCorrectionMs === right.anchorCorrectionMs;
+    && left.seekOffsetMs === right.seekOffsetMs;
 }
 
 /**
@@ -263,7 +263,7 @@ export class StagePlaybackController {
   private pending: { queueItemId: string; songId: string; token: number } | null = null;
   private token = 0;
   private reportedEnds = new Set<string>();
-  private anchorCorrectionMs: number | null = null;
+  private seekOffsetMs: number | null = null;
   private status: RoomPlaybackStatus = emptyRoomPlaybackStatus();
   private startRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private cancelled = false;
@@ -276,8 +276,8 @@ export class StagePlaybackController {
     return this.status;
   }
 
-  get anchorCorrection(): number | null {
-    return this.anchorCorrectionMs;
+  get seekOffset(): number | null {
+    return this.seekOffsetMs;
   }
 
   anchor(): PlaybackAnchor | null {
@@ -364,7 +364,7 @@ export class StagePlaybackController {
           this.deps.engine.stop();
           this.loaded = null;
         }
-        this.anchorCorrectionMs = null;
+        this.seekOffsetMs = null;
         this.publishIdle();
         break;
 
@@ -374,7 +374,7 @@ export class StagePlaybackController {
           this.deps.engine.stop();
           this.loaded = null;
         }
-        this.anchorCorrectionMs = null;
+        this.seekOffsetMs = null;
         this.publishIdle();
         break;
 
@@ -406,7 +406,7 @@ export class StagePlaybackController {
         break;
 
       case 'start': {
-        this.anchorCorrectionMs = decision.plan.anchorCorrectionMs;
+        this.seekOffsetMs = decision.plan.seekOffsetMs;
         if (decision.restart) {
           this.deps.engine.stop();
         }
@@ -477,7 +477,7 @@ export class StagePlaybackController {
           this.deps.engine.stop();
           this.loaded = null;
         }
-        this.anchorCorrectionMs = null;
+        this.seekOffsetMs = null;
         this.publishIdle();
         break;
     }
@@ -510,7 +510,7 @@ export class StagePlaybackController {
       lyrics: null,
       countdownBeats: playback.countdownRemainingBeats ?? null,
       error: null,
-      anchorCorrectionMs: null,
+      seekOffsetMs: null,
     });
 
     void (async () => {
@@ -605,7 +605,7 @@ declare global {
       readonly phase: RoomPlaybackPhase;
       readonly songId: string | null;
       readonly queueItemId: string | null;
-      readonly anchorCorrectionMs: number | null;
+      readonly seekOffsetMs: number | null;
       expectedMs: () => number;
       audioPositionMs: () => number;
       driftMs: () => number;
@@ -692,8 +692,8 @@ export function useStagePlayback({
       get queueItemId() {
         return controller.getStatus().queueItemId;
       },
-      get anchorCorrectionMs() {
-        return controller.anchorCorrection;
+      get seekOffsetMs() {
+        return controller.seekOffset;
       },
       expectedMs: () => controller.expectedMs(),
       audioPositionMs: () => engine.positionMs(),

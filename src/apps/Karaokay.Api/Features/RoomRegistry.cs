@@ -120,6 +120,13 @@ public sealed class RoomState
     /// <summary>Beats remaining in the count-in.</summary>
     public int CountdownRemainingBeats { get; internal set; }
 
+    /// <summary>
+    /// True while a count-in restored from persisted state (cold restart) has not yet had its beat
+    /// cursor re-created. The authority uses this to resume at the next due beat instead of
+    /// replaying beats the previous process already broadcast (§5.1 rule 3).
+    /// </summary>
+    internal bool CountdownAwaitingResume { get; set; }
+
     /// <summary>Last stage capability report, if any.</summary>
     public StageCapabilities? StageCapabilities { get; internal set; }
 

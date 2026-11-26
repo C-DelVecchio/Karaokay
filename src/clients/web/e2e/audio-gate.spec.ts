@@ -46,19 +46,40 @@ test('unlocks, counts down, then starts audio only after the lead-in', async ({ 
   const stage = page.locator('.stage');
   await expect(stage).toHaveAttribute('data-phase', 'countdown');
 
-  await expect.poll(
-    () => page.evaluate(() => (window.__karaokayAudioLog ?? []).includes('decodeAudioData:synth-twinkle-variations')),
-    // Decoding runs concurrently with the 2 000 ms count-in. 1.5 s was tight enough to flake on a
-    // cold first run with eight parallel workers, so allow a little slack while the count-in is
-    // still running; the assertions below are unchanged (a start before decode still fails them).
-    { timeout: 3_000 },
-  ).toBe(true);
+  const decodeSnapshot = await page.waitForFunction(
+    () => {
+      const log = [...(window.__karaokayAudioLog ?? [])];
+      if (!log.includes('decodeAudioData:synth-twinkle-variations')) {
+        return null;
+      }
 
-  const duringCountdown = await audioLog(page);
-  expect(duringCountdown).toContain('AudioContext:created');
-  expect(duringCountdown).toContain('decodeAudioData:synth-twinkle-variations');
-  expect(duringCountdown).not.toContain('start');
-  expect(duringCountdown).not.toContain('createMediaElementSource');
+      return {
+        log,
+        phase: document.querySelector('.stage')?.getAttribute('data-phase') ?? '',
+      };
+    },
+    null,
+    // Decoding runs concurrently with the 2 000 ms count-in. Capture the log and the phase
+    // atomically the instant the decode entry appears, so a slow decode (longer than the
+    // count-in) cannot race the assertions below.
+    { timeout: 3_000 },
+  );
+
+  const snapshot = (await decodeSnapshot.jsonValue()) as { log: string[]; phase: string };
+  expect(snapshot.log).toContain('AudioContext:created');
+  expect(snapshot.log).toContain('decodeAudioData:synth-twinkle-variations');
+  expect(snapshot.log).not.toContain('createMediaElementSource');
+
+  const startIndex = snapshot.log.indexOf('start');
+  const decodeIndex = snapshot.log.indexOf('decodeAudioData:synth-twinkle-variations');
+  if (snapshot.phase === 'countdown') {
+    // The count-in is still running: nothing may have started yet.
+    expect(startIndex).toBe(-1);
+  } else {
+    // The decode outlasted the count-in, so playback is allowed to have started — but only after
+    // the stems finished decoding.
+    expect(startIndex).toBeGreaterThan(decodeIndex);
+  }
 
   await expect(stage).toHaveAttribute('data-phase', 'playing', { timeout: 15_000 });
 

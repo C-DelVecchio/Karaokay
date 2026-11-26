@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DemoTrackPicker } from './DemoTrackPicker';
 import type { PickedDemoTrack } from './DemoTrackPicker';
 import { findLeadInGap } from './lyrics';
 import { useStagePlayback, type RoomPlaybackPhase } from './playbackController';
 import { CanvasLyricsRenderer } from './renderer/CanvasLyricsRenderer';
 import { StageRoomPanel } from './StageRoomPanel';
+import { createTrailingDebounce } from './trailingDebounce';
 import { useStageClock } from './useStageClock';
 import { useStageRoom } from './useStageRoom';
 import { useStageVideo } from './useStageVideo';
@@ -17,6 +18,13 @@ import { stageTestClock, WebAudioEngine } from './WebAudioEngine';
 const engine = new WebAudioEngine();
 
 let audioUnlockAcknowledged = false;
+
+/**
+ * A slider drag emits dozens of `input` events. The server persists every distinct guide-vocal
+ * value through its single-writer channel, so sending each one enqueues a pile of DB round-trips
+ * ahead of the next command (Pause/Skip). Coalesce to one send per trailing ~100 ms instead.
+ */
+const GUIDE_VOLUME_SEND_DEBOUNCE_MS = 100;
 
 type StagePhase = 'picking' | 'countdown' | 'playing' | 'paused' | 'ended';
 
@@ -74,6 +82,14 @@ export function StageShell() {
     setGuideVocalVolume,
   } = useStageRoom();
   const playback = room.playback ?? room.snapshot?.playback ?? null;
+  const guideSend = useMemo(
+    () => createTrailingDebounce<number>(GUIDE_VOLUME_SEND_DEBOUNCE_MS, (value) => {
+      void setGuideVocalVolume(value);
+    }),
+    [setGuideVocalVolume],
+  );
+  // Deliver the final slider value if the stage unmounts in the middle of a drag.
+  useEffect(() => () => guideSend.flush(), [guideSend]);
   const video = useStageVideo({
     playback,
     audioUnlocked,
@@ -240,7 +256,7 @@ export function StageShell() {
     setGuideVolume(value);
     engine.setGuideVocalVolume(value);
     if (roomStatus === 'live') {
-      void setGuideVocalVolume(value);
+      guideSend.schedule(value);
     }
   };
 

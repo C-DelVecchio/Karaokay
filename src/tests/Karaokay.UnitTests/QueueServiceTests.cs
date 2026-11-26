@@ -205,6 +205,52 @@ public sealed class QueueServiceTests
     }
 
     [Fact]
+    public async Task StartWithOnlyADownloadingHeadAwaitsTheDownload()
+    {
+        var (service, client) = CreateService();
+        var room = CreateRoom();
+        var downloading = AddEntry(room, QueueItemState.Downloading, position: 0, name: "Downloading");
+
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+
+        // §5.1 rule 3: starting a still-downloading head parks the room on that item instead of
+        // reporting Idle; the count-in clock does not start until the download completes.
+        Assert.Equal(PlaybackStatus.AwaitingDownload, room.Status);
+        Assert.Equal(downloading.Id, room.CurrentQueueItemId);
+        Assert.Null(room.PlaybackStartedAtUtc);
+        Assert.Equal(0, room.PausedAtPositionMs);
+        Assert.Equal(0, room.CountdownRemainingBeats);
+        Assert.Equal(WirePlaybackStatus.AwaitingDownload, client.PlaybackStates[^1].Status);
+        Assert.Equal(0L, client.PlaybackStates[^1].PositionMs);
+    }
+
+    [Fact]
+    public async Task RemovingTheCountingInItemResetsTheCountdownState()
+    {
+        var (service, client) = CreateService();
+        var room = CreateRoom();
+        var current = AddEntry(room, QueueItemState.Ready, position: 0, name: "Current");
+        var upcoming = AddEntry(room, QueueItemState.Ready, position: 1, name: "Upcoming");
+        await service.StartPlaybackAsync(room, CancellationToken.None);
+
+        // As if the authority had already pushed two of the four beats.
+        room.CountdownRemainingBeats = 2;
+        room.CountdownAwaitingResume = true;
+
+        var removed = await service.RemoveQueueItemAsync(room, current.Id, CancellationToken.None);
+
+        Assert.True(removed);
+        Assert.Equal(PlaybackStatus.Idle, room.Status);
+        Assert.Null(room.CurrentQueueItemId);
+        Assert.Null(room.PlaybackStartedAtUtc);
+        Assert.Equal(0, room.PausedAtPositionMs);
+        Assert.Equal(0, room.CountdownRemainingBeats);
+        Assert.False(room.CountdownAwaitingResume);
+        Assert.Equal(WirePlaybackStatus.Idle, client.PlaybackStates[^1].Status);
+        Assert.Equal([upcoming.Id], QueueIds(room));
+    }
+
+    [Fact]
     public async Task RemovingTheCurrentItemPersistsTheIdlePlaybackReset()
     {
         var room = CreateRoom();

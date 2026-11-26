@@ -69,7 +69,7 @@ describe('planAudioStart', () => {
     expect(planAudioStart(playback(), ANCHOR_MS, 0, 30_000)).toEqual({
       expectedMs: 0,
       audioPositionMs: 0,
-      anchorCorrectionMs: 0,
+      seekOffsetMs: 0,
       startOffsetMs: 0,
     });
   });
@@ -78,11 +78,11 @@ describe('planAudioStart', () => {
     const plan = planAudioStart(playback(), ANCHOR_MS + 12_000, 0, 30_000);
 
     expect(plan.expectedMs).toBe(12_000);
-    expect(plan.anchorCorrectionMs).toBe(12_000);
+    expect(plan.seekOffsetMs).toBe(12_000);
     expect(plan.startOffsetMs).toBe(12_000);
   });
 
-  it('expresses a resume as the correction between the pause clock and the authority', () => {
+  it('expresses a resume as the seek offset between the pause clock and the authority', () => {
     const resumedAt = ANCHOR_MS + 5_000;
     const processedAt = resumedAt + 40;
     const plan = planAudioStart(
@@ -93,7 +93,7 @@ describe('planAudioStart', () => {
     );
 
     expect(plan.expectedMs).toBe(5_040);
-    expect(plan.anchorCorrectionMs).toBe(40);
+    expect(plan.seekOffsetMs).toBe(40);
     expect(plan.startOffsetMs).toBe(5_040);
   });
 
@@ -101,14 +101,14 @@ describe('planAudioStart', () => {
     const plan = planAudioStart(playback({ positionMs: 0 }), ANCHOR_MS + 31_000, 0, 30_000);
 
     expect(plan.startOffsetMs).toBe(29_950);
-    expect(plan.anchorCorrectionMs).toBe(31_000);
+    expect(plan.seekOffsetMs).toBe(31_000);
   });
 });
 
 describe('planAudioStart under simulated latency', () => {
   it('stays within the ±150 ms budget with an 80 ms RTT residual', () => {
     // The stage's local clock is 500 ms behind the server. An 80 ms round trip leaves at most
-    // RTT/2 = 40 ms of offset-estimate error after the median filter.
+    // RTT/2 = 40 ms of offset-estimate error after the best-of-window filter.
     const trueOffsetMs = 500;
     const estimatedErrorMs = 40;
     const localNowMs = ANCHOR_MS + 8_000 - trueOffsetMs;
@@ -118,16 +118,16 @@ describe('planAudioStart under simulated latency', () => {
     const trueExpectedMs = 8_000;
 
     expect(Math.abs(plan.startOffsetMs - trueExpectedMs)).toBeLessThanOrEqual(150);
-    expect(plan.anchorCorrectionMs).toBe(8_040);
+    expect(plan.seekOffsetMs).toBe(8_040);
   });
 
   it('does not accumulate correction when the stage joins mid-song', () => {
     const first = planAudioStart(playback(), ANCHOR_MS + 4_000, 0, 30_000);
     const second = planAudioStart(playback(), ANCHOR_MS + 9_000, first.startOffsetMs, 30_000);
 
-    // A later reconciliation uses the fresh authority, not the first correction added twice.
+    // A later reconciliation uses the fresh authority, not the first offset added twice.
     expect(second.startOffsetMs).toBe(9_000);
-    expect(second.anchorCorrectionMs).toBe(5_000);
+    expect(second.seekOffsetMs).toBe(5_000);
   });
 });
 

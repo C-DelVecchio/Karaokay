@@ -335,6 +335,7 @@ public class PartyRoom {
     public long PausedAtPositionMs { get; set; }          // position when Paused; 0 otherwise
     public double GuideVocalVolume { get; set; } = 0.6;  // 0..1, Multitrack songs only
     public int CountdownRemainingBeats { get; set; }
+    public long QueueSequence { get; set; }              // monotonic delta sequence; write-ahead minted
     public List<QueueItem> Queue { get; set; } = new();
 }
 
@@ -440,6 +441,13 @@ the compile-time bridge between C# and TS.
                      Countdown = fixed 4-beat/lead-in + pre-roll; stage buffers audio/video
 ```
 
+`Countdown` is **start-only**: `Start` (or the automatic start after an awaited download) enters
+it; the advance path (song ended, skip) goes straight back to `Playing` with a fresh anchor and
+never re-enters the count-in. A `Pause` during the count-in is supported: the room parks at
+`Paused`/position 0, and `Resume` starts with a fresh anchor. The stage renders a lead-in for the
+song itself from its local media; the room's count-in dots show the server's fixed four-beat cue
+(see rule 5).
+
 **Rules (all enforced by the single-writer `PlaybackAuthority` hosted service — no other component
 mutates room playback state):**
 
@@ -451,17 +459,32 @@ mutates room playback state):**
    broadcasts its progress; the stage shows a "Next song: downloading…" interstitial with the
    progress bar.
 2. **Download completes while playing:** item moves to `Ready` silently; queue list updates.
-3. **Head-of-queue still downloading + user presses Start:** allowed → `AwaitingDownload`; on the
-   download-complete event the authority auto-transitions to `Countdown` (no second press needed).
-4. **Failure:** item → `Failed`, broadcast `HubError(DownloadFailed)` + toast on phones; queue
-   auto-advances past it (stage interstitial shows failure for 4 s).
-5. **Countdown:** computed on the stage from `beatMs` (from `gaps[]`/`initialSilenceMs`), but the
-   authority still broadcasts `CountdownTicked` so phones can show a mini progress ring. Stage
-   begins audio pre-roll at Countdown start to guarantee decode readiness.
+3. **Head-of-queue still downloading + user presses Start:** allowed → `AwaitingDownload`; when the
+   item becomes `Ready` the authority starts the count-in itself (no second press needed). The
+   transition is guarded on the room still awaiting that exact cursor item, so a concurrent
+   Start/Skip/Remove wins cleanly; a failed awaited download returns the room to `Idle` so a later
+   Start can pick the next playable item.
+4. **Failure:** item → `Failed`, broadcast `HubError(DownloadFailed)` + toast on phones; a queue that
+   is already advancing skips past it (stage interstitial shows failure for 4 s). If the failed item
+   was the one an `AwaitingDownload` room was parked on, the room returns to `Idle` so a later Start
+   can choose the next playable item.
+5. **Countdown:** server-authoritative and fixed: four 500 ms beats (`CountdownBeats = 4`,
+   `CountdownBeatMs = 500`), broadcast as `CountdownTicked(queueItemId, remainingBeats, beatMs)` with
+   `remainingBeats` running 4 → 1. Phones render a mini ring from that contract and animate it
+   locally per tick; in room mode the stage shows the fixed four-beat count-in carried by the Start
+   broadcast (`StageShell` reads `countdownRemainingBeats` from that one message, so its dots do not
+   decrement per beat). Only the database-less local `DemoTrackPicker` derives dots from
+   `lyrics.json` gaps; room playback
+   does not. The authority still begins audio pre-roll at Countdown start to guarantee decode
+   readiness, and a hard restart mid-count-in resumes at the next due beat instead of replaying
+   beats the previous process already sent.
 6. **Single-writer + persistence:** `PlaybackAuthority` serializes commands via
-   `Channel<RoomCommand>`; every state transition is written to the DB before broadcast
-   (write-ahead) so a container cold-restart can rebuild `PlaybackStateDto` and guests reconnect
-   transparently.
+   `Channel<RoomCommand>`; every durable state transition is written to the DB before broadcast
+   (write-ahead, and playback + queue writes for one transition share a single `SaveChanges`), so a
+   container cold-restart can rebuild `PlaybackStateDto` and guests reconnect transparently. The
+   count-in tick is the one exception: it mutates derived in-memory remaining-beat progress and
+   broadcasts `CountdownTicked` without a DB write (the durable step is the persisted transition
+   into and out of `Countdown`).
 
 ### 5.2 Reconnection handling
 
@@ -485,16 +508,19 @@ mutates room playback state):**
 reconciled with a two-layer scheme:
 
 ```
-Layer 1 — Wall-clock offset (NTP-style over SignalR, every 5 s, 8-sample median):
+Layer 1 — Wall-clock offset (NTP-style over SignalR, every 5 s, min-RTT best-of-window):
   client sends Ping{t1} → server echoes Pong{t1, t2}
   client: RTT = now4 − t1;  clockOffset = t2 − (t1 + RTT/2)
   serverNow ≈ localNow + clockOffset
+  the last 8 exchanges form the window; samples whose RTT exceeds 250 ms are rejected and the
+  offset comes from the lowest-RTT sample in the window (≥2 accepted samples before it is
+  trusted, otherwise the stage falls back to the receipt-time anchor of the room-state message)
 
 Layer 2 — Media clock alignment:
   PlaybackChanged carries (PositionMs, TimeAnchorUtc). Stage computes:
     expectedMs = (serverNow − TimeAnchorUtc) + PositionMs       // pauses folded into PositionMs
   Stage's local audio element is the master sample clock. One-time calibration at playback start:
-    anchorCorrection = expectedMs − audio.currentTime*1000
+    seekOffset = expectedMs − audio.currentTime*1000
   applied as a constant; audio.currentTime is never re-slaved afterwards (audio is ground truth).
   For <video> (YouTube mode): drift = expectedMs − video.currentTime*1000
     if |drift| > 120 ms once  → video.currentTime = expectedMs/1000  (hard nudge)
@@ -520,7 +546,7 @@ reconnects within the same page session.
 ### 6.1 Sweep-fill karaoke rendering math (shared by Canvas & SkiaSharp)
 
 ```
-T               = current media clock ms (audio.currentTime * 1000, minus anchorCorrection)
+T               = current media clock ms (audio.currentTime * 1000, minus seekOffset)
 view window     = 3–4 lines centered vertically; line advance when T passes the 3rd line's last endMs
 
 Per syllable i (timestamps from lyrics.json):
@@ -811,7 +837,8 @@ Each slice below specifies files to create, required tests, and a copy-paste
 - API: `PlaybackAuthority.cs` (command channel, single writer, watchdog, `ReportSongEnded`
   idempotency guard), `PlaybackStateDto` broadcasts, `Ping/Pong` clock endpoint in hub,
   `SetGuideVocalVolume`.
-- Web: `lib/signalr/clockSync.ts` (Ping/Pong sampler with the 8-sample median offset filter; the
+- Web: `lib/signalr/clockSync.ts` (Ping/Pong sampler with the 8-sample min-RTT best-of-window
+  offset filter, 250 ms RTT rejection and receipt-anchor fallback; the
   planned `useServerClock.ts` name never existed — see
   [ADR-008](adr/008-slice-4-playback-authority-decisions.md)), stage `playbackController.ts`
   (audio-as-ground-truth calibration, one-time server-anchor alignment, hard/soft video nudges per

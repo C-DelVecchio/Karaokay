@@ -389,6 +389,7 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
 
         await using var guest = await ConnectAsync().ConfigureAwait(false);
         Assert.True((await JoinAsync(guest, room.Code, "Ada", "guest").ConfigureAwait(false)).Ack.Success);
+        using var playback = new PlaybackCollector(guest);
 
         var first = await EnqueueAsync(guest, songIds[0]).ConfigureAwait(false);
         var second = await EnqueueAsync(guest, songIds[1]).ConfigureAwait(false);
@@ -396,12 +397,15 @@ public sealed class RoomHubIntegrationTests : IClassFixture<PostgresApiFixture>
         await guest.InvokeAsync("StartPlayback").ConfigureAwait(false);
 
         // Start is two-phase: the authority counts in, then starts the song with a fresh anchor.
-        var countingIn = await GetSnapshotAsync(http, room.Code).ConfigureAwait(false);
+        // Assert on the broadcast rather than an immediate snapshot: on a slow CI runner the 2 s
+        // count-in can legitimately have finished by the time the snapshot round-trips.
+        var countingIn = await playback
+            .WaitForAsync(state => state.Status == PlaybackStatus.Countdown)
+            .ConfigureAwait(false);
         Assert.Equal(PlaybackStatus.Countdown, countingIn.Status);
-        Assert.Equal(PlaybackStatus.Countdown, countingIn.Playback.Status);
-        Assert.Equal(first.QueueItemId, countingIn.Playback.CurrentQueueItemId);
-        Assert.Equal(0L, countingIn.Playback.PositionMs);
-        Assert.Equal(4, countingIn.Playback.CountdownRemainingBeats);
+        Assert.Equal(first.QueueItemId, countingIn.CurrentQueueItemId);
+        Assert.Equal(0L, countingIn.PositionMs);
+        Assert.Equal(4, countingIn.CountdownRemainingBeats);
 
         var playing = await WaitForPlaybackStatusAsync(
                 http,

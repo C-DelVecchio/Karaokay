@@ -140,10 +140,12 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
 - **Tests.** The .NET suite had **84 tests** at the reviewed commit: 11 architecture, 38 unit, and
   35 integration (29 passed + 6 Testcontainers tests skipped without Docker), for 78 passed / 6
   skipped. The M1 fix added 8 unit and 3 integration tests. After the early Slice 5 work, the
-  follow-up hardening, and Slice 4, the current tree has **188 unit + 11 architecture + 31
-  integration passing** (230 passed of 258 total), with **28 Docker-gated integration tests skipped
-  locally**; Vitest is at **120 tests in 15 files** and Playwright at **11 tests in 7 spec files**.
-  Numbers measured 2026-11-25.
+  follow-up hardening, Slice 4, the post-review backend fixes, and the restart-guard fix, the current
+  tree has **197 unit + 11 architecture + 31 integration passing** (239 passed of 267 total), with
+  **28 Docker-gated integration tests skipped locally**; Vitest is at **133 tests in 16 files**. The
+  Playwright lane
+  is not counted here: it depends on the parallel web-client clock-sync alignment fix and is not
+  asserted green by this backend change. Numbers measured 2026-11-25.
 
 The Slice 3 review is [`docs/review/slice-3-review.md`](review/slice-3-review.md). Its M1 finding —
 a guest reorder could skip a song or end the room early — is fixed; M2 and M3 are recorded there as
@@ -180,7 +182,7 @@ What landed:
 - **Stage video surface.** `StageShell` renders a `<video>` element routed through the existing
   `WebAudioEngine` via one post-unlock `createMediaElementSource`, with clean audio↔video
   transitions. It consumes `PlaybackStateDto` and derives its expected position from the §5.3
-  server-synchronized `serverNow` (Ping/Pong median offset), not the raw local wall clock. Slice 4
+  server-synchronized `serverNow` (Ping/Pong min-RTT best-of-window offset), not the raw local wall clock. Slice 4
   then made this part of the authoritative path: room playback drives the stage's library stems and
   the video surface, and the stage calibrates once against its own audio clock.
 - **Tests.** Unit coverage for video-id validation, yt-dlp JSON/progress parsing, argument arrays,
@@ -205,17 +207,30 @@ Slice 4 answered: *who is allowed to move playback, and how does every screen co
   `TaskCompletionSource`. Hub methods — `StartPlayback`, `PausePlayback`, `ResumePlayback`,
   `SkipSong`, `RestartSong`, `ReportSongEnded`, and `SetGuideVocalVolume` — await that completion,
   so a phone observes the persisted-then-broadcast state on return (**read-your-writes**). The
-  consume loop applies every transition under the room `CommandLock`, persists before broadcasting
-  (§5.1 rule 6). Enqueue/move stay on their direct path; removal is authority-owned because
-  deleting the current item also resets playback.
+  consume loop applies every durable transition under the room `CommandLock` and persists before
+  broadcasting (§5.1 rule 6); playback + queue writes for one transition share a single
+  `SaveChanges` transaction. The count-in tick is the one non-persisting broadcast: it sends
+  `CountdownTicked` after releasing the command lock so a slow client can never block Pause/Skip.
+  Enqueue/move stay on their direct path; removal is authority-owned because deleting the current
+  item also resets playback.
 - **Authority-owned count-in.** Start puts the room in `Countdown` with an anchor of "now" and four
   remaining beats. The authority broadcasts `CountdownTicked(queueItemId, remainingBeats, beatMs:
   500)` per beat (4 → 1) over a 2 s window, then auto-transitions to `Playing` with a **fresh**
   `PlaybackStartedAtUtc` anchor. `Features/PlaybackTiming.cs` pins `CountdownBeats = 4` and
-  `CountdownBeatMs = 500`. Pause during the count-in parks at `Paused`/position 0; Resume starts a
-  fresh anchor; Skip cancels and advances; Restart re-enters the count-in; a duplicate Start is
-  ignored. The beat is deliberately fixed: authoritative per-song tempo lives in `lyrics.json`, and
-  the stage renders the precise dots itself (§5.1 rule 5), while phones get a compact ring.
+  `CountdownBeatMs = 500`. Pause during the count-in is supported and parks at `Paused`/position 0
+  (the phone remote enables the Pause button during the count-in in parallel); Resume starts a fresh
+  anchor; Skip cancels and advances; Restart re-enters the count-in; a duplicate Start is ignored.
+  The count-in is **start-only**: the advance path (song ended / skip) goes straight to `Playing`
+  with a fresh anchor and never re-enters `Countdown`. The beat is deliberately fixed and
+  server-authoritative: `CountdownTicked` drives the phone ring, which animates locally per tick. In
+  room mode `StageShell` shows the fixed four-beat count-in carried by the Start broadcast; it does
+  not decrement its dots per beat. Only the database-less local `DemoTrackPicker` derives dots from
+  `lyrics.json` gaps. A hard restart mid-count-in resumes at the next due beat instead of
+  replaying beats the previous process already broadcast.
+- **AwaitingDownload auto-start.** Starting the room while the only candidate is still
+  `Downloading` parks it in `AwaitingDownload` (§5.1 rule 3). The authority's tick loop watches the
+  cursor item and begins the count-in by itself when it becomes `Ready`, guarded on the room still
+  awaiting that exact item; a failed awaited download returns the room to `Idle`.
 - **Duration watchdog.** A 100 ms tick considers only `Playing` rooms and fires at
   `PlaybackStartedAtUtc + Song.DurationMs + 5 s`, advancing through the **same guarded end path** as
   a stage report.
@@ -223,13 +238,16 @@ Slice 4 answered: *who is allowed to move playback, and how does every screen co
   CurrentQueueItemId` — means a duplicate stage report, or the watchdog firing after that report,
   can never double-advance the queue.
 - **Clock sync.** `StageHub.Ping` echoes `t1` with `t2` stamped at the server, and
-  `lib/signalr/clockSync.ts` keeps the last **8 samples** and publishes the **median** offset plus
-  `serverNow`. The stage uses that estimate for video position and for joining mid-song.
+  `lib/signalr/clockSync.ts` keeps the last **8 samples** and publishes the **min-RTT
+  best-of-window** offset plus `serverNow`. Samples slower than 250 ms are rejected before they
+  enter the window; the offset is only trusted after **two** accepted samples, otherwise callers
+  fall back to the receipt-time anchor. The stage uses that estimate for video position and for
+  joining mid-song.
 - **Authoritative stage playback.** `features/stage/playbackController.ts` (`StagePlaybackController`
   + `useStagePlayback`) subscribes to `PlaybackChanged`, loads library stems and lyrics through
   `songMedia.ts` (`/api/songs/{id}/instrumental|vocals|lyrics`, with GUID→slug catalog mapping for
   the no-DB fallback), and performs the §5.3 Layer-2 start alignment **once**:
-  `anchorCorrection = expectedMs − audioPositionMs`. Audio is ground truth and is never re-slaved
+  `seekOffset = expectedMs − audioPositionMs`. Audio is ground truth and is never re-slaved
   mid-song; a stage joining mid-song aligns to the authoritative position. Pause/resume/skip/restart
   and ended are steered from the room, with deduped `reportSongEnded`.
 - **Stage UI.** Room playback takes over `StageShell`'s library mode; the local `DemoTrackPicker`
@@ -255,14 +273,18 @@ Slice 4 answered: *who is allowed to move playback, and how does every screen co
 - **Testability.** `QueueService` takes an injectable `TimeProvider` so tests can drive anchors;
   `PlaybackAuthority` has the same internal seam plus a tick-interval override. `QueueOrdering` also
   protects the count-in cursor item from moves.
-- **Tests.** The final tree has **188 unit + 11 architecture + 31 integration passing**, with **28
-  Docker-gated integration tests skipped locally** (CI runs them). Five Slice 4 integration tests
-  cover the two-phase Start broadcast and tick contract, ±30 ms pause/resume, the watchdog,
-  duplicate-end, and cold-restart rehydration. Vitest is **120 tests in 15 files**; Playwright is
-  **11 tests in 7 spec files**, including `e2e/playback-authority.spec.ts` (phone-driven
-  Start/Pause/Resume/Skip converge on the stage; a mid-song stage join aligns under a +40 ms clock
-  bias standing in for RTT/2) and a +300 ms `injectDrift` hard-nudge assertion in
-  `e2e/youtube.spec.ts`.
+- **Tests.** The final tree has **197 unit + 11 architecture + 31 integration passing** (239 passed
+  of 267), with **28 Docker-gated integration tests skipped locally** (CI runs them). The Slice 4
+  coverage includes the five Docker-gated integration tests (two-phase Start broadcast and tick
+  contract, ±30 ms pause/resume, the watchdog, duplicate-end, cold-restart rehydration) plus new
+  authority unit tests for `AwaitingDownload` auto-start, the `AwaitingDownload` restart guard,
+  cold-restart count-in resume, and the
+  command-channel write timeout. Vitest is **133 tests in 16 files**. The Playwright lane is owned
+  by the parallel web-client change that lands the clock-sync alignment fix; its specs (including
+  `e2e/playback-authority.spec.ts` for phone-driven Start/Pause/Resume/Skip convergence and the
+  +300 ms `injectDrift` hard-nudge in `e2e/youtube.spec.ts`) are **not asserted green by this
+  backend change**. These backend fixes plus that alignment fix are what make the E2E lane
+  reproducible.
 
 The implementation choices and the two blueprint filename corrections are recorded in
 [ADR-008](adr/008-slice-4-playback-authority-decisions.md); the completion follow-up is in the
@@ -277,8 +299,6 @@ Do not look for these:
   rehydration now exists (Slice 4), but room GC does not.
 - **Stage authentication.** The stage role is self-declared in `JoinRequest` (Slice 3 review M2);
   any guest with the code can claim it until a stage secret or one-stage-per-room claim lands.
-- **AwaitingDownload auto-start wiring.** The stage renders the phase and the queue, but a fresh
-  `SongReady`/AwaitingDownload transition does not yet auto-start playback (§5.1 rule 3 wiring).
 - **Azure deployment.** No Bicep files, deploy workflow, or live URL.
 - **Android anything.** No `net10.0-android` app, C++ Oboe engine, or SkiaSharp renderer.
 
@@ -669,7 +689,7 @@ room state into stage audio. It loads the song's stems and `lyrics.json` through
 catalog. Loading stays gesture-gated: nothing is fetched or decoded before the audio unlock.
 
 The §5.3 Layer-2 calibration happens **once** per song:
-`anchorCorrectionMs = expectedMs − audioPositionMs`, where `expectedMs` comes from the playback
+`seekOffsetMs = expectedMs − audioPositionMs`, where `expectedMs` comes from the playback
 anchor plus the synchronized server clock. Audio is ground truth: the stage does not re-slave the
 audio to the server mid-song. A stage that joins mid-song applies the same one-time alignment to
 the authoritative position, so it starts at the right lyric line. Pause/resume/skip/restart and
@@ -751,7 +771,7 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 
 ### 4.5 `src/tests/` — the safety net
 
-- **`Karaokay.UnitTests` (188 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, and the count-in interactions; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, and Start/Pause/Resume/Skip/Idle transitions.
+- **`Karaokay.UnitTests` (196 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, the count-in interactions, `AwaitingDownload` auto-start, cold-restart count-in resume, and the command-channel write timeout; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, the countdown reset on removal, and Start/Pause/Resume/Skip/Idle transitions.
 - **`Karaokay.IntegrationTests` (31 passing; 28 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, stage-role rejection, and five Slice 4 tests (two-phase Start broadcast and tick contract, ±30 ms pause/resume, watchdog, duplicate-end, cold-restart rehydration). The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
 - **`Karaokay.ArchitectureTests` (11 tests).** These enforce layering. **Reflection** is .NET's ability to inspect assemblies and types at runtime. The tests use `Assembly.GetReferencedAssemblies()` to assert, for example, that `Contracts` never references Domain/Application/Infrastructure/DryWetMidi/CliWrap/EF Core, that `Application` never references `Infrastructure`, that CLI tools never reference the apps, and that `Domain` is a leaf. **Positive controls** assert the probe really sees a known reference, so a broken helper cannot make every rule pass vacuously. The source comment explains why reflection replaced `NetArchTest.Rules`, which misreported dependencies on .NET 10.
 
@@ -827,15 +847,17 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 2. **Queue.** Enqueue/move/remove take the room command lock, mutate the in-memory queue, persist through EF Core (when configured), then broadcast a `QueueChanged` delta carrying the next monotonic sequence. A client that sees a gap re-joins for a snapshot rather than replaying deltas.
 3. **Playback.** Start/Pause/Resume/Skip/Restart/`ReportSongEnded`/`SetGuideVocalVolume` enqueue a
    `RoomCommand` on the authority's bounded channel and await completion; the single-writer
-   `PlaybackAuthority` applies each transition under the room lock, persists, and broadcasts
-   `PlaybackChanged` (or `CountdownTicked` during the count-in). The watchdog ends a stalled
+   `PlaybackAuthority` applies each durable transition under the room lock, persists, and broadcasts
+   `PlaybackChanged`. During the count-in it also broadcasts `CountdownTicked` per beat without a DB
+   write, and it sends those ticks after releasing the command lock. The watchdog ends a stalled
    `Playing` room through the same guarded path. Reordering remains forward-only: `Playing`/`Ended`
    rows are the cursor and cannot be moved, which is the M1 fix from the Slice 3 review.
 4. **Stage convergence.** The stage loads the current song's stems/lyrics and aligns once to the
    authoritative anchor, then keeps its own audio clock as ground truth; a mid-song join aligns to
-   the authoritative position. Phone Start/Pause/Resume/Skip therefore drive stage sound. Still not
-   connected: an `AwaitingDownload` queue item does not auto-start playback when it becomes ready
-   (§5.1 rule 3), and the stage role remains client-declared (review M2).
+   the authoritative position. Phone Start/Pause/Resume/Skip therefore drive stage sound. A room
+   started on a still-downloading head parks in `AwaitingDownload` and the authority starts the
+   count-in by itself when the item becomes `Ready` (§5.1 rule 3). The stage role remains
+   client-declared (review M2).
 5. **YouTube path.** A guest searches and enqueues through `/api/youtube` (the guest UI is REST-only);
    the worker downloads, broadcasts progress, and marks the queue row `Ready`. The stage renders the
    resulting video through its `<video>` surface, steered by the §5.3 server-clock offset, and the
@@ -855,12 +877,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (~230 passing; 28 Docker-gated skips locally)
+dotnet test           # run unit, integration, and architecture tests (239 passing; 28 Docker-gated skips locally)
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **230 passed / 28 skipped** on a Docker-less machine; the two DB-less YouTube contract edges now run locally, and CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **239 passed / 28 skipped** on a Docker-less machine (197 unit, 11 architecture, 31 integration); the two DB-less YouTube contract edges run locally, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a
@@ -886,7 +908,7 @@ From `src/clients/web`:
 ```bash
 npm ci                    # install exact versions from package-lock.json
 npm run dev               # Vite dev server with hot reload at http://localhost:5173
-npm test                  # Vitest once (120 tests)
+npm test                  # Vitest once (133 tests)
 npm run build             # type-check with tsc, then bundle into dist/
 npm run test:e2e          # build, serve dist/, run Playwright
 npm run test:e2e:ci       # Playwright against an existing build
@@ -952,19 +974,28 @@ scope open, and the documented work landed afterwards. The implementation choice
 
 - **Single writer.** `Features/PlaybackAuthority.cs` is a `BackgroundService` consuming a bounded
   `Channel` (capacity 256, wait, single reader) of `RoomCommand` + `TaskCompletionSource` envelopes.
-  Hub playback methods await persist→broadcast completion (read-your-writes); every transition runs
-  under the room command lock.
+  Hub playback methods await persist→broadcast completion (read-your-writes); every durable
+  transition runs under the room command lock. A full/stalled channel fails the invocation after a
+  2 s write timeout instead of hanging it.
 - **Count-in.** `Features/PlaybackTiming.cs` pins four 500 ms beats; `CountdownTicked` runs 4 → 1,
-  then `Playing` starts with a fresh anchor. Pause during the count-in parks at position 0; Skip
-  cancels; Restart re-enters; duplicate Start is ignored.
+  then `Playing` starts with a fresh anchor. It is start-only: advance/skip go straight to `Playing`.
+  Pause during the count-in is supported (parked at position 0; the phone button is enabled in
+  parallel); Skip cancels; Restart re-enters; duplicate Start is ignored. Room mode shows the fixed
+  four-beat count-in from the Start broadcast in `StageShell`; only the no-DB picker uses
+  `lyrics.json` gaps. A hard restart
+  mid-count-in resumes at the next due beat instead of replaying beats already sent.
+- **AwaitingDownload.** Start on a still-`Downloading` head parks the room instead of reporting
+  `Idle`; the authority starts the count-in by itself when that exact cursor item becomes `Ready`
+  (§5.1 rule 3), and a failed awaited download returns the room to `Idle`.
 - **Watchdog and idempotency.** A 100 ms tick ends a `Playing` room at `PlaybackStartedAtUtc +
   DurationMs + 5 s` through the same guarded end path as a stage report. One
   `queueItemId == CurrentQueueItemId` guard makes duplicate reports and watchdog firings
   non-double-advancing.
-- **Clock sync.** `StageHub.Ping` plus `lib/signalr/clockSync.ts`: 8-sample median offset and
-  `serverNow`.
+- **Clock sync.** `StageHub.Ping` plus `lib/signalr/clockSync.ts`: 8-sample min-RTT
+  best-of-window offset (250 ms RTT rejection, ≥2-sample confidence gate, receipt-anchor fallback)
+  and `serverNow`.
 - **Authoritative stage playback.** `features/stage/playbackController.ts` + `songMedia.ts` load
-  stems/lyrics, align once with `anchorCorrection = expectedMs − audioPositionMs`, keep audio as
+  stems/lyrics, align once with `seekOffset = expectedMs − audioPositionMs`, keep audio as
   ground truth, and steer pause/resume/skip/restart/ended. Room playback takes over `StageShell`;
   the local picker is an explicit idle fallback. `WebAudioEngine.pause()` preserves position.
 - **Phone count-in ring.** `CountdownTicked` feeds `roomState.applyCountdownTick` and the SVG ring in
@@ -979,7 +1010,11 @@ scope open, and the documented work landed afterwards. The implementation choice
 
 - [x] `PlaybackAuthority` single-writer hosted service + duration watchdog. **Landed in
       `Features/PlaybackAuthority.cs`; the 100 ms watchdog shares the guarded end path.**
-- [x] `Ping`/`Pong` clock sync and the 8-sample median client offset filter, applied to the web
+- [x] Authoritative `AwaitingDownload` start (§5.1 rule 3). **Landed: `StartPlaybackAsync` parks on
+      a downloading head and the authority's tick begins the count-in when the cursor item becomes
+      `Ready`; a failed awaited download returns to `Idle`.**
+- [x] `Ping`/`Pong` clock sync and the 8-sample min-RTT best-of-window client offset filter (250 ms
+      RTT rejection, ≥2-sample confidence gate, receipt-anchor fallback), applied to the web
       stage video path (`StageHub.Ping` stamps `t2` at entry; `useStageVideo` passes `serverNow` into
       `expectedPositionMs`). **Landed; the authoritative stage audio start alignment and the phone
       countdown ring (`CountdownTicked`) also landed in `playbackController.ts` and
@@ -993,16 +1028,18 @@ scope open, and the documented work landed afterwards. The implementation choice
 - [x] Duplicate `ReportSongEnded` idempotency against the watchdog race. **Landed: one shared
       `queueItemId == CurrentQueueItemId` guard under the command lock.**
 - [x] The Slice 4 integration/Playwright matrix below (authoritative position, ±300 ms
-      self-correction, watchdog, duplicate-end protection). **Landed: five Docker-gated integration
-      tests and `e2e/playback-authority.spec.ts`; the video drift assertion lives in
-      `e2e/youtube.spec.ts`.**
+      self-correction, watchdog, duplicate-end protection). **Backend matrix landed: five Docker-gated
+      integration tests plus the authority unit tests. The Playwright specs
+      (`e2e/playback-authority.spec.ts` and the `e2e/youtube.spec.ts` drift assertion) are owned by
+      the parallel web-lane clock-sync alignment fix and are not asserted green by this backend
+      change.**
 
 **Original scope, for the record**
 
 Slice 3 had a queue and a small playback state machine. Slice 4 made playback authoritative and
 synchronized, and closed the gap between what phones control and what the stage renders:
-single-writer transitions persisted before broadcast; `Ping`/`Pong` with a median offset; one-time
-audio-anchor calibration; a duration watchdog; a duplicate-end guard; and rehydration of rooms,
+single-writer transitions persisted before broadcast; `Ping`/`Pong` with a min-RTT best-of-window
+offset; one-time audio-anchor calibration; a duration watchdog; a duplicate-end guard; and rehydration of rooms,
 queue sequence, and anchors from Postgres. What remains from the original planning is not Slice 4
 scope but the Slice 3 review's M2/M3 and the ADR-005 governance gap — see the next section.
 

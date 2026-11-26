@@ -20,7 +20,7 @@ Commit `324da8a` is titled `feat(slice-4): YouTube search, yt-dlp download worke
 The roadmap's documented **Slice 4** deliverables were not implemented by that commit:
 
 1. a single-writer `PlaybackAuthority` hosted service with the duration watchdog;
-2. `Ping`/`Pong` clock sync with the 8-sample median offset filter;
+2. `Ping`/`Pong` clock sync with the 8-sample min-RTT best-of-window offset filter (250 ms RTT rejection, ≥2-sample confidence gate, receipt-anchor fallback);
 3. authoritative stage playback driven by the host — Slice 3 review **M5**;
 4. cold-start rehydration of playing rooms from Postgres — Slice 3 review **M4**;
 5. duplicate `ReportSongEnded` idempotency against the watchdog race. The current hub already ignores a report whose queue-item id is not current, but that check exists without the authority/watchdog pair the documented rule is written against.

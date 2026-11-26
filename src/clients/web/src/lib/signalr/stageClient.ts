@@ -125,8 +125,13 @@ export class StageClient {
     }
   }
 
-  async ping(t1: number): Promise<Pong> {
-    return this.invoke<Pong>(HUB_METHODS.Ping, { t1 } satisfies PingPayload);
+  async ping(): Promise<Pong> {
+    // Ensure the connection first, then stamp t1 in the same synchronous stretch as the send:
+    // SignalR buffers the frame synchronously inside `invoke`, so a main-thread stall either
+    // happens before the stamp (harmless) or after the frame is already queued.
+    const connection = await this.ensureStarted();
+    const t1 = Date.now();
+    return connection.invoke<Pong>(HUB_METHODS.Ping, { t1 } satisfies PingPayload);
   }
 
   async searchYouTube(query: string): Promise<YouTubeSearchResultDto[]> {

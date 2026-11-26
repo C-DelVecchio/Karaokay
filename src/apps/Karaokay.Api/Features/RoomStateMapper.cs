@@ -80,8 +80,28 @@ internal static class RoomStateMapper
             }
         }
 
+        if (room.Status == PlaybackStatus.Countdown && room.PlaybackStartedAtUtc is { } countdownAnchor)
+        {
+            // A restart can land mid count-in. The stored remaining-beat value is whatever the last
+            // durable transition wrote (the Start beat), so derive the live value from the persisted
+            // anchor: the authority resumes at this beat instead of replaying 4 → 1 (§5.1 rule 3).
+            room.CountdownRemainingBeats = RemainingCountdownBeats(countdownAnchor, DateTime.UtcNow);
+        }
+
+        room.CountdownAwaitingResume = room.Status == PlaybackStatus.Countdown;
+
         room.QueueEntries.AddRange(entries);
         return room;
+    }
+
+    private static int RemainingCountdownBeats(DateTime anchorUtc, DateTime nowUtc)
+    {
+        var elapsedMs = Math.Max(0, (nowUtc - anchorUtc).TotalMilliseconds);
+        var elapsedBeats = (int)Math.Floor(elapsedMs / PlaybackTiming.CountdownBeatMs);
+        return Math.Clamp(
+            PlaybackTiming.CountdownBeats - elapsedBeats,
+            1,
+            PlaybackTiming.CountdownBeats);
     }
 
     private static RoomQueueEntry MapEntry(QueueItem item) => new()

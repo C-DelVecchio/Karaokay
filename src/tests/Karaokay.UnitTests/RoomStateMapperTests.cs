@@ -118,6 +118,10 @@ public sealed class RoomStateMapperTests
     [Fact]
     public void CountdownRoomKeepsTheCursorItemReady()
     {
+        // NOTE: wall-clock fixture. The "-1 s" anchor is expected to map to 2 remaining beats; if
+        // more than ~500 ms elapses between this fixture and `Map` (a stalled test host, a debugger
+        // breakpoint) the derived value drops to 1 and this assertion fails. Low risk in normal
+        // runs — do not "fix" it by widening the expectation without understanding the derivation.
         var anchor = DateTime.UtcNow.AddSeconds(-1);
         var item = CreateItem(position: 0, QueueItemState.Ready, "A");
 
@@ -137,11 +141,14 @@ public sealed class RoomStateMapperTests
         var room = RoomStateMapper.Map(row);
 
         // The count-in anchor is restored so the authority can resume (or finish) the window, and
-        // the queue row stays Ready until audio actually starts.
+        // the queue row stays Ready until audio actually starts. The remaining-beat value is derived
+        // from the persisted anchor (one second elapsed → two beats left), not copied from the stale
+        // Start-time row value, so a restart resumes at beat 2 instead of replaying 4 → 1.
         Assert.Equal(PlaybackStatus.Countdown, room.Status);
         Assert.Equal(item.Id, room.CurrentQueueItemId);
         Assert.Equal(anchor, room.PlaybackStartedAtUtc);
-        Assert.Equal(3, room.CountdownRemainingBeats);
+        Assert.Equal(2, room.CountdownRemainingBeats);
+        Assert.True(room.CountdownAwaitingResume);
         Assert.Equal(5, room.QueueSequence);
         Assert.Equal(QueueItemState.Ready, room.Queue.Single().State);
     }

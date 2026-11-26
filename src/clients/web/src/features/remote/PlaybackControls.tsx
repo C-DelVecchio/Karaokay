@@ -98,6 +98,9 @@ export function PlaybackControls({
   const canStart =
     playback.status === PlaybackStatus.Idle || playback.status === PlaybackStatus.SongEnded;
   const isPlaying = playback.status === PlaybackStatus.Playing;
+  // The server supports pausing the count-in (QueueService.PausePlaybackAsync handles Countdown),
+  // so the phone must be able to stop a song before it reaches `Playing`.
+  const canPause = isPlaying || playback.status === PlaybackStatus.Countdown;
   const isPaused = playback.status === PlaybackStatus.Paused;
   const ring = countdownFor(playback, countdown);
 
@@ -126,7 +129,7 @@ export function PlaybackControls({
         <button
           type="button"
           className="remote-secondary"
-          disabled={disabled || !isPlaying}
+          disabled={disabled || !canPause}
           onClick={() => {
             void onPause();
           }}

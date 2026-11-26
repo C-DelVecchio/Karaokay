@@ -47,7 +47,7 @@ owed and where each fix lives.
 
 | # | Fix | Evidence | Status |
 |---:|---|---|---|
-| M3 | Video sync must use a server-clock offset (Slice 4 `Ping`/`Pong` + median filter) instead of the local wall clock, or state clearly that it is unsynchronized. | `src/clients/web/src/features/stage/videoSync.ts:52-76`; `src/clients/web/src/features/stage/useStageVideo.ts:161-196` | **Landed.** |
+| M3 | Video sync must use a server-clock offset (Slice 4 `Ping`/`Pong` + min-RTT best-of-window filter) instead of the local wall clock, or state clearly that it is unsynchronized. | `src/clients/web/src/features/stage/videoSync.ts:52-76`; `src/clients/web/src/features/stage/useStageVideo.ts:161-196` | **Landed.** |
 | M4 | Download-channel backpressure must not block HTTP/hub request paths; decouple admission from the bounded `Channel` and surface a clean busy/queue response. | `src/apps/Karaokay.Api/Features/YouTubeIngestionService.cs:167-175,230-244,333-358,399-405`; `src/apps/Karaokay.Api/Endpoints/YouTubeRateLimiting.cs` | **Landed.** |
 | M5 | `/api/youtube/search` and `/api/youtube/enqueue` need authentication/authorization, rate limiting, and a process cap; the REST enqueue currently passes `sessionTokenId: null`. | `src/apps/Karaokay.Api/Endpoints/YouTubeEndpoints.cs:98-118,141-166`; `src/apps/Karaokay.Api/Endpoints/YouTubeRateLimiting.cs:21-25,52-80` | **Landed.** |
 | Format | Enforce H.264/AAC with strict format filters and an `ffprobe` assertion; `-S vcodec:h264,acodec:aac` is currently a sort preference with fallbacks. | `src/core/Karaokay.Infrastructure/MediaIngest/YtDlpCommandBuilder.cs:69-73`; `src/core/Karaokay.Infrastructure/MediaIngest/YtDlpClient.cs:167-186` | **Landed.** |
@@ -165,7 +165,7 @@ partially landed.
 
 The remaining Slice 4 work is not optional and is planned next: `PlaybackAuthority` + watchdog,
 authoritative stage playback (M5), cold-start rehydration (M4), and duplicate-end idempotency. The
-`Ping`/`Pong` + median offset filter has landed for the web stage video path (M3), but the
+`Ping`/`Pong` + min-RTT best-of-window offset filter has landed for the web stage video path (M3), but the
 authoritative stage audio calibration and phone countdown rings in §5.3 still depend on that
 remaining work. Slice 3 review M4/M5 stay open until those land.
 
@@ -184,20 +184,20 @@ review trail shows what was owed.
 | `PlaybackAuthority` + duration watchdog | `src/apps/Karaokay.Api/Features/PlaybackAuthority.cs`, `Features/PlaybackTiming.cs`; registered as a singleton hosted service in `Program.cs` | **Landed.** Single writer over a bounded channel (256, wait, single reader) of `RoomCommand` + `TaskCompletionSource`; transitions persist before broadcast under the room lock; 100 ms watchdog ends a `Playing` room at `PlaybackStartedAtUtc + DurationMs + 5 s`. |
 | Duplicate-end idempotency against the watchdog race | `PlaybackAuthority.cs` (shared `queueItemId == CurrentQueueItemId` guard under the command lock) | **Landed.** A duplicate stage report and a post-report watchdog firing cannot double-advance. |
 | Authority count-in and phone countdown ring (`CountdownTicked`) | `Features/PlaybackTiming.cs`, `PlaybackAuthority.cs`; `src/clients/web/src/lib/signalr/roomState.ts` (`applyCountdownTick`), `features/remote/PlaybackControls.tsx` (SVG ring) | **Landed.** Four 500 ms beats, 4 → 1, then `Playing` with a fresh anchor. |
-| Authoritative stage playback wiring (Slice 3 review **M5**) | `src/clients/web/src/features/stage/playbackController.ts`, `songMedia.ts`, `StageShell.tsx`; `WebAudioEngine.pause()` | **Landed.** Room playback takes over library audio; one-time `anchorCorrection = expectedMs − audioPositionMs`, audio as ground truth; `DemoTrackPicker` is an idle fallback only. M5 is closed. |
+| Authoritative stage playback wiring (Slice 3 review **M5**) | `src/clients/web/src/features/stage/playbackController.ts`, `songMedia.ts`, `StageShell.tsx`; `WebAudioEngine.pause()` | **Landed.** Room playback takes over library audio; one-time `seekOffset = expectedMs − audioPositionMs`, audio as ground truth; `DemoTrackPicker` is an idle fallback only. M5 is closed. |
 | Cold-start rehydration (Slice 3 review **M4**) | `Features/RoomRehydrator.cs`, `Features/RoomStateMapper.cs`, `Program.ApplyDatabaseStartupAsync`; migration `20261125160000_AddRoomQueueSequence`; `RoomRegistry.RestoreQueueSequence` | **Landed.** Open rooms, ordered queue, anchors, and a write-ahead-minted `PartyRoom.QueueSequence` restored; dangling cursor → `Idle`; stale duplicate `Playing` rows demoted. M4 is closed. |
 | Clock sync used by authoritative playback | `src/clients/web/src/lib/signalr/clockSync.ts` | **Already landed in the first follow-up**; now consumed by `playbackController.ts` for start alignment and mid-song joins. |
 | Guide-vocal slider through the hub | `StageHub.SetGuideVocalVolume` → authority; `useStageRoom.setGuideVocalVolume` | **Landed.** |
 
 **Final verification on the completed tree.** `dotnet build` Debug and Release: **0 warnings**.
-.NET: **188 unit + 11 architecture + 31 integration passing**, with **28 Docker-gated integration
-tests skipped locally** (Docker is unavailable on this machine; CI runs them). The five new Slice 4
-integration tests cover the two-phase Start broadcast and tick contract, ±30 ms pause/resume, the
-watchdog, duplicate-end, and cold-restart rehydration. Web: Vitest **120 tests / 15 files** passing,
-`npm run build` green, Playwright **11 tests / 7 spec files** passing, including the new
-`e2e/playback-authority.spec.ts` (phone-driven Start/Pause/Resume/Skip converge on the stage; a
-mid-song stage join aligns under a +40 ms clock bias standing in for RTT/2) and a +300 ms
-`injectDrift` hard-nudge assertion added to `e2e/youtube.spec.ts`.
+.NET after the post-review backend fixes: **197 unit + 11 architecture + 31 integration passing**
+(239 passed of 267), with **28 Docker-gated integration tests skipped locally** (Docker is
+unavailable on this machine; CI runs them). The five Slice 4 integration tests cover the two-phase
+Start broadcast and tick contract, ±30 ms pause/resume, the watchdog, duplicate-end, and
+cold-restart rehydration. Web: Vitest **133 tests / 16 files** passing. The Playwright lane —
+`e2e/playback-authority.spec.ts` and the `e2e/youtube.spec.ts` drift assertion included — is owned
+by the parallel web-client clock-sync alignment fix; it is **not claimed green by this backend
+change**, and these backend fixes plus that alignment fix are what make the lane reproducible.
 
 **Still open (not claimed by this follow-up).**
 
@@ -222,10 +222,12 @@ points at `lib/signalr/clockSync.ts` and `useStageVideo.ts` as well.
 
 1. **Removing the current item now persists the playback reset before it broadcasts.**
    `QueueService.RemoveQueueItemAsync` clears the cursor and returns the room to `Idle` when the
-   removed entry is current — a playback mutation — so that branch now mints the queue sequence,
-   writes the playback reset with `PersistRoomAsync`, persists the renumbered queue, and only then
-   fans out `QueueChanged` and the playback broadcast, matching the write-ahead ordering in §5.1
-   rule 6. Pinned by `RemovingTheCurrentItemPersistsTheIdlePlaybackReset` in
+   removed entry is current — a playback mutation — so that branch mints the queue sequence and
+   writes the playback reset and the renumbered queue **in one `SaveChanges` transaction** before
+   fanning out `QueueChanged` and the playback broadcast, matching the write-ahead ordering in §5.1
+   rule 6. (The first version called `PersistRoomAsync` then `PersistQueueAsync`; the later backend
+   review combined them into `PersistRoomStateAsync` so a crash between the two is impossible.)
+   Pinned by `RemovingTheCurrentItemPersistsTheIdlePlaybackReset` in
    `src/tests/Karaokay.UnitTests/QueueServiceTests.cs`; it runs on the EF InMemory harness double
    and re-reads the row through a fresh `AsNoTracking` query, so the assertions prove `SaveChanges`
    durability rather than in-memory state.
@@ -234,6 +236,24 @@ points at `lib/signalr/clockSync.ts` and `useStageVideo.ts` as well.
    `PlaybackAuthority` command channel instead of calling `QueueService` directly, so the single
    writer owns the removal and any reset it triggers (§5.1 rule 6). A missing item still surfaces
    the `NotFound` hub error, now derived from the command result.
+
+**Addendum #2 (2026-11-25, backend review fixes).** A second review pass over the Slice 4 commit
+found backend and documentation gaps; this change closes them:
+
+| Finding | Fix | Status |
+|---|---|---|
+| `StartPlayback` on a `Downloading` head yielded `Idle`, contradicting §5.1 rule 3 and the ADR/PROJECT_STATE claims. | `StartPlaybackAsync` now parks in `AwaitingDownload`; `PlaybackAuthority.TickRoomAsync` begins the count-in when the exact cursor item becomes `Ready` (guarded on status + item), and a failed awaited download returns to `Idle`. Pinned by new `PlaybackAuthorityTests` and `QueueServiceTests` cases. | **Landed.** |
+| Removal persisted playback (`PersistRoomAsync`) and queue (`PersistQueueAsync`) in two separate `SaveChanges`, leaving a crash window with the room `Idle` while the row was still queued. | Both methods were replaced by one `PersistRoomStateAsync(playback, queue)` that uses one scope and one `SaveChangesAsync`; removal, Start/advance, and other transitions that touch both slices now commit atomically. | **Landed.** |
+| `CountdownTicked` was awaited inside `CommandLock` at a 500 ms cadence, so a slow client blocked Pause/Skip for the count-in. | Beats and the in-memory projection are computed under the lock; the fan-out runs after `Release()`. | **Landed.** |
+| Removing the current item during `Countdown` reset status/anchor/position but left `CountdownRemainingBeats` (and the restore flag) stale. | The removal branch resets both. Pinned by `RemovingTheCountingInItemResetsTheCountdownState`. | **Landed.** |
+| A cold restart mid-count-in started a fresh cursor at beat 4, re-emitting beats phones already saw. | `RoomState.CountdownAwaitingResume` marks a restored count-in; the authority resumes at the next due beat (derived from the persisted anchor), and `RoomStateMapper` derives the live remaining-beat value at startup. Pinned by `ColdRestartMidCountInDoesNotReplayAlreadyBroadcastBeats` and the mapper test. | **Landed.** |
+| `PlaybackAuthority.EnqueueAsync` awaited `WriteAsync` with `CancellationToken.None`, so a consumed-stalled (full) channel could hang the hub invocation. | A 2 s `CommandWriteTimeout` (injectable internal seam) fails the invocation with `TimeoutException`. Pinned by `EnqueueFailsFastWhenTheCommandChannelIsFull`. | **Landed.** |
+| `PlaybackLifecycleStartsPausesResumesSkipsAndIdles` read a snapshot immediately after Start and required `Countdown`; on slow CI the 2 s count-in could already be `Playing`. | It now waits on the `PlaybackCollector` `WaitForAsync(Countdown)` broadcast, mirroring the other Slice 4 test. | **Landed.** |
+
+The E2E lane is **not** part of this verification: the web client's clock-sync alignment fix is
+landing in parallel (owned by the frontend change), and only that fix plus these backend fixes make
+`e2e/playback-authority.spec.ts` and the `e2e/youtube.spec.ts` drift assertion reproducible. This
+review does not claim Playwright green.
 
 Local verification precondition: `src/clients/web/playwright.config.ts` now retries once locally
 (`retries: process.env.CI ? 2 : 1`) rather than not at all. The first cold run under 8 parallel

@@ -4,6 +4,7 @@ using Karaokay.Api.Hubs;
 using Karaokay.Contracts.Hubs;
 using Microsoft.AspNetCore.SignalR;
 using PlaybackStatus = Karaokay.Domain.PlaybackStatus;
+using QueueItemState = Karaokay.Domain.QueueItemState;
 
 namespace Karaokay.Api.Features;
 
@@ -11,15 +12,20 @@ namespace Karaokay.Api.Features;
 /// Single-writer playback authority (docs/ARCHITECTURE.md §5.1). Hub playback methods enqueue a
 /// <see cref="RoomCommand"/> on the bounded command channel; this hosted service is the only
 /// component that drives room playback transitions, so command ordering and broadcast ordering can
-/// never interleave. Every transition is persisted before it is broadcast (write-ahead, §5.1 rule
-/// 6) by the shared <see cref="QueueService"/> transition bodies.
+/// never interleave. Every durable transition is persisted before it is broadcast (write-ahead,
+/// §5.1 rule 6) by the shared <see cref="QueueService"/> transition bodies; the count-in tick is
+/// derived progress and broadcasts without a DB write.
 /// </summary>
 /// <remarks>
-/// The service also owns the two time-driven parts of the state machine:
+/// The service also owns the time-driven parts of the state machine:
 /// <list type="bullet">
 /// <item>the authority-owned count-in (§5.1 rule 3): after Start the room sits in
 /// <c>Countdown</c> for four 500 ms beats, broadcasting <c>CountdownTicked(4 → 1)</c>, then
-/// auto-transitions to <c>Playing</c> with a fresh alignment anchor;</item>
+/// auto-transitions to <c>Playing</c> with a fresh alignment anchor. The count-in is start-only:
+/// advance (song ended / skip) goes straight to <c>Playing</c> and never re-enters it;</item>
+/// <item>the <c>AwaitingDownload</c> completion (§5.1 rule 3): a room started on a still-downloading
+/// head is parked, and this loop begins the count-in as soon as the cursor item becomes
+/// <c>Ready</c>;</item>
 /// <item>the duration watchdog — a room left <c>Playing</c> past
 /// <c>PlaybackStartedAtUtc + Song.DurationMs + 5s</c> is ended through the same advance path as a
 /// stage report, sharing its <c>queueItemId == CurrentQueueItemId</c> idempotency guard. A room in
@@ -33,6 +39,12 @@ public sealed partial class PlaybackAuthority : BackgroundService
     /// generous bound only exists to keep a runaway client from growing the queue without limit.
     /// </summary>
     public const int CommandCapacity = 256;
+
+    /// <summary>
+    /// Upper bound on how long a hub invocation waits to place its command on the channel. A
+    /// stalled consumer must surface as a failed invocation instead of hanging the caller forever.
+    /// </summary>
+    public static readonly TimeSpan CommandWriteTimeout = TimeSpan.FromSeconds(2);
 
     /// <summary>Grace period past the song duration before the watchdog ends a stalled song.</summary>
     public static readonly TimeSpan WatchdogGrace = TimeSpan.FromSeconds(5);
@@ -48,6 +60,7 @@ public sealed partial class PlaybackAuthority : BackgroundService
     private readonly ILogger<PlaybackAuthority> _logger;
     private readonly TimeProvider _time;
     private readonly TimeSpan _tickInterval;
+    private readonly TimeSpan _commandWriteTimeout;
 
     public PlaybackAuthority(
         RoomRegistry registry,
@@ -65,7 +78,8 @@ public sealed partial class PlaybackAuthority : BackgroundService
         IHubContext<StageHub, IStageHubClient> hub,
         ILogger<PlaybackAuthority> logger,
         TimeProvider timeProvider,
-        TimeSpan tickInterval)
+        TimeSpan tickInterval,
+        TimeSpan? commandWriteTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(queue);
@@ -79,6 +93,9 @@ public sealed partial class PlaybackAuthority : BackgroundService
         _logger = logger;
         _time = timeProvider;
         _tickInterval = tickInterval > TimeSpan.Zero ? tickInterval : TickInterval;
+        _commandWriteTimeout = commandWriteTimeout is { } timeout && timeout > TimeSpan.Zero
+            ? timeout
+            : CommandWriteTimeout;
 
         _commands = Channel.CreateBounded<PlaybackCommand>(
             new BoundedChannelOptions(CommandCapacity)
@@ -104,12 +121,28 @@ public sealed partial class PlaybackAuthority : BackgroundService
         var completion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        await _commands.Writer
-            .WriteAsync(new PlaybackCommand(command, completion), cancellationToken)
-            .ConfigureAwait(false);
+        // A stalled consumer would otherwise make WriteAsync wait forever on a full channel and hang
+        // the hub invocation. Fail fast (the caller sees a hub error) instead of leaking the call.
+        using var writeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        writeTimeout.CancelAfter(_commandWriteTimeout);
+        try
+        {
+            await _commands.Writer
+                .WriteAsync(new PlaybackCommand(command, completion), writeTimeout.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"The playback command channel did not accept {command.Type} for room "
+                + $"{command.RoomCode} within {_commandWriteTimeout}.");
+        }
 
         return await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Test seam: number of commands queued but not yet consumed.</summary>
+    internal int PendingCommandCount => _commands.Reader.Count;
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -221,18 +254,43 @@ public sealed partial class PlaybackAuthority : BackgroundService
         Guid? currentQueueItemId = null;
         DateTime? playbackAnchorUtc = null;
         long durationMs = 0;
+        QueueItemState currentState = QueueItemState.Queued;
 
         lock (room.SyncRoot)
         {
             status = room.Status;
-            if (status is PlaybackStatus.Playing or PlaybackStatus.Countdown)
+            if (status is PlaybackStatus.Playing
+                or PlaybackStatus.Countdown
+                or PlaybackStatus.AwaitingDownload)
             {
                 currentQueueItemId = room.CurrentQueueItemId;
                 playbackAnchorUtc = room.PlaybackStartedAtUtc;
-                durationMs = currentQueueItemId is { } id
-                    ? room.QueueEntries.FirstOrDefault(entry => entry.Id == id)?.Song?.DurationMs ?? 0
-                    : 0;
+                var currentEntry = currentQueueItemId is { } id
+                    ? room.QueueEntries.FirstOrDefault(entry => entry.Id == id)
+                    : null;
+                durationMs = currentEntry?.Song?.DurationMs ?? 0;
+                currentState = currentEntry?.State ?? QueueItemState.Queued;
             }
+        }
+
+        if (status == PlaybackStatus.AwaitingDownload && currentQueueItemId is { } awaitingId)
+        {
+            // §5.1 rule 3: Start on a downloading head parks the room; the download completion
+            // resumes it here, through the same QueueService transition body the single writer uses.
+            if (currentState == QueueItemState.Ready)
+            {
+                await _queue
+                    .CompleteAwaitingDownloadAsync(room, awaitingId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (currentState is QueueItemState.Failed or QueueItemState.Ended)
+            {
+                await _queue
+                    .CancelAwaitingDownloadAsync(room, awaitingId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return;
         }
 
         if (status == PlaybackStatus.Playing
@@ -290,7 +348,21 @@ public sealed partial class PlaybackAuthority : BackgroundService
         if (!_countdownCursors.TryGetValue(room.Id, out var cursor) || cursor.AnchorUtc != anchor)
         {
             cursor = new CountdownCursor(anchor);
+
+            // Cold restart mid-count-in: this process has no cursor, but every beat whose 500 ms
+            // slot already elapsed before `targetBeat` was broadcast by the previous process.
+            // Resume at the next due beat instead of replaying 4 → 1, which phones would see as a
+            // duplicate `4`. A count-in started in this process begins with the sentinel and does
+            // emit beat 4 (and catches up if the loop ran late).
+            if (room.CountdownAwaitingResume)
+            {
+                cursor.LastBroadcastRemainingBeats = Math.Min(
+                    PlaybackTiming.CountdownBeats + 1,
+                    targetBeat + 1);
+            }
+
             _countdownCursors[room.Id] = cursor;
+            room.CountdownAwaitingResume = false;
         }
 
         var nextBeat = cursor.LastBroadcastRemainingBeats == int.MinValue
@@ -299,6 +371,7 @@ public sealed partial class PlaybackAuthority : BackgroundService
 
         if (nextBeat >= targetBeat)
         {
+            List<int> beats = [];
             await room.CommandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -309,32 +382,38 @@ public sealed partial class PlaybackAuthority : BackgroundService
                     return;
                 }
 
-                // Push every beat the clock has passed, in order (4 → 1), exactly once. Deriving the
-                // beat from the anchor keeps the count-in restart-safe; catching up here means a
-                // late tick loop never skips a beat the phones are rendering.
+                // Compute the beats and keep the in-memory projection consistent under the command
+                // lock, then release before awaiting the fan-out: a slow client must never block
+                // Pause/Skip for the length of the count-in (§5.1 rule 6).
                 for (var beat = nextBeat; beat >= targetBeat; beat--)
                 {
-                    // Derived progress, not a state transition: keep the in-memory snapshot
-                    // consistent with the tick we are about to push. The durable transition is
-                    // Countdown → Playing below, which is persisted before it broadcasts.
+                    beats.Add(beat);
+                }
+
+                if (beats.Count > 0)
+                {
+                    // Derived progress, not a durable transition: this is the one broadcast that
+                    // does not persist first. The durable Countdown → Playing step below does.
+                    cursor.LastBroadcastRemainingBeats = beats[^1];
                     lock (room.SyncRoot)
                     {
-                        room.CountdownRemainingBeats = beat;
+                        room.CountdownRemainingBeats = beats[^1];
                     }
-
-                    await _hub.Clients.Group(room.Code)
-                        .CountdownTicked(new CountdownDto(
-                            queueItemId,
-                            beat,
-                            PlaybackTiming.CountdownBeatMs))
-                        .ConfigureAwait(false);
-
-                    cursor.LastBroadcastRemainingBeats = beat;
                 }
             }
             finally
             {
                 room.CommandLock.Release();
+            }
+
+            foreach (var beat in beats)
+            {
+                await _hub.Clients.Group(room.Code)
+                    .CountdownTicked(new CountdownDto(
+                        queueItemId,
+                        beat,
+                        PlaybackTiming.CountdownBeatMs))
+                    .ConfigureAwait(false);
             }
         }
 

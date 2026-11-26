@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ClockSyncSampler, serverNowMs } from '../../lib/signalr/clockSync';
+import {
+  ClockSyncSampler,
+  receiptAnchorOffsetMs,
+  serverNowMs,
+} from '../../lib/signalr/clockSync';
 import {
   isValidRoomCode,
   type CreateRoomResponse,
+  type PlaybackStateDto,
 } from '../../lib/signalr/protocol';
 import {
   applyCountdownTick,
@@ -34,7 +39,7 @@ export type StageRoomStatus = 'connecting' | 'live' | 'offline';
 export interface StageRoomView {
   status: StageRoomStatus;
   room: RemoteRoomState;
-  /** Median Ping/Pong offset in ms; 0 until at least two samples exist. */
+  /** Best-of-window Ping/Pong offset in ms; 0 until at least two accepted samples exist. */
   clockOffsetMs: number;
   /** Local time corrected onto the server's wall clock (docs/ARCHITECTURE.md §5.3). */
   serverNow: () => number;
@@ -76,13 +81,35 @@ export function useStageRoom(): StageRoomView {
   const clientRef = useRef<StageClient | null>(null);
   const samplerRef = useRef<ClockSyncSampler | null>(null);
   const clockOffsetRef = useRef(0);
+  const clockConfidentRef = useRef(false);
+  /**
+   * Receipt-anchored fallback for the first moments of a join: `anchorServerMs` is the server
+   * timestamp of the last playback projection and `receivedAtLocalMs` is when this client saw it.
+   * The difference is a one-way-delay-bounded clock offset that does not depend on the Ping/Pong
+   * filter (see `receiptAnchorOffsetMs`).
+   */
+  const receiptAnchorRef = useRef<{
+    anchorServerMs: number;
+    receivedAtLocalMs: number;
+  } | null>(null);
   const joinedRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
+
+    const notePlaybackAnchor = (playback: PlaybackStateDto | null | undefined) => {
+      const anchorServerMs = Date.parse(playback?.timeAnchorUtc ?? '');
+      if (!Number.isFinite(anchorServerMs)) {
+        return;
+      }
+
+      receiptAnchorRef.current = { anchorServerMs, receivedAtLocalMs: Date.now() };
+    };
+
     const client = new StageClient({
       onJoinedRoom: (snapshot) => {
+        notePlaybackAnchor(snapshot.playback);
         if (!disposed) {
           setRoom((current) => applySnapshot(current, snapshot));
         }
@@ -113,6 +140,7 @@ export function useStageRoom(): StageRoomView {
         }
       },
       onPlaybackChanged: (playback) => {
+        notePlaybackAnchor(playback);
         if (!disposed) {
           setRoom((current) => applyPlayback(current, playback));
         }
@@ -145,9 +173,10 @@ export function useStageRoom(): StageRoomView {
     clientRef.current = client;
 
     const sampler = new ClockSyncSampler({
-      ping: (t1) => client.ping(t1),
-      onChange: (offsetMs) => {
+      ping: () => client.ping(),
+      onChange: (offsetMs, confident) => {
         clockOffsetRef.current = offsetMs;
+        clockConfidentRef.current = confident;
         if (!disposed) {
           setClockOffsetMs(offsetMs);
         }
@@ -197,7 +226,17 @@ export function useStageRoom(): StageRoomView {
     const bias = typeof window !== 'undefined' && Number.isFinite(window.__karaokayClockBiasMs)
       ? window.__karaokayClockBiasMs ?? 0
       : 0;
-    return serverNowMs(Date.now(), clockOffsetRef.current) + bias;
+    const localNow = Date.now();
+    const anchor = receiptAnchorRef.current;
+    const fallbackOffsetMs = anchor
+      ? receiptAnchorOffsetMs(anchor.anchorServerMs, anchor.receivedAtLocalMs)
+      : null;
+    // Before the Ping/Pong filter is confident, extrapolate from the room-state anchor at the
+    // local receipt instant instead of trusting a possibly stall-biased offset.
+    const offsetMs = !clockConfidentRef.current && fallbackOffsetMs !== null
+      ? fallbackOffsetMs
+      : clockOffsetRef.current;
+    return serverNowMs(localNow, offsetMs) + bias;
   }, []);
 
   const reportSongEnded = useCallback(async (queueItemId: string): Promise<void> => {

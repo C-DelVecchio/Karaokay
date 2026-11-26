@@ -241,21 +241,20 @@ public sealed partial class QueueService
                     room.Status = PlaybackStatus.Idle;
                     room.PlaybackStartedAtUtc = null;
                     room.PausedAtPositionMs = 0;
+                    room.CountdownRemainingBeats = 0;
+                    room.CountdownAwaitingResume = false;
                     playbackChanged = true;
                 }
             }
 
             // Removing the current item is also a playback transition (cursor cleared, room Idle),
             // so it follows the same write-ahead ordering as RunPlaybackCommandAsync: mint the
-            // sequence, persist playback and queue, then fan out (§5.1 rule 6).
+            // sequence, persist playback and queue in ONE SaveChanges, then fan out (§5.1 rule 6).
+            // A single SaveChanges means a crash cannot leave the playback reset durable while the
+            // removed row is still queued.
             var sequence = room.NextQueueSequence();
-
-            if (playbackChanged)
-            {
-                await PersistRoomAsync(room, cancellationToken).ConfigureAwait(false);
-            }
-
-            await PersistQueueAsync(room, cancellationToken).ConfigureAwait(false);
+            await PersistRoomStateAsync(room, playbackChanged, queue: true, cancellationToken)
+                .ConfigureAwait(false);
 
             await _hub.Clients.Group(room.Code)
                 .QueueChanged(new QueueDelta([], [queueItemId], [.. updated.Select(ToDto)], sequence))
@@ -322,9 +321,11 @@ public sealed partial class QueueService
     /// <summary>
     /// Starts the room: from <c>Idle</c>/<c>SongEnded</c> with a playable head item the room enters
     /// the authority-owned <c>Countdown</c> (docs/ARCHITECTURE.md §5.1 rule 3) and the ticker
-    /// auto-transitions to <c>Playing</c> with a fresh alignment anchor. A duplicate Start while
-    /// already counting in or playing is ignored so it can never re-anchor; Start while
-    /// <c>Paused</c> is likewise a no-op (Resume preserves the position).
+    /// auto-transitions to <c>Playing</c> with a fresh alignment anchor. When the only candidate is
+    /// still <c>Downloading</c> the room instead parks in <c>AwaitingDownload</c>; the authority
+    /// starts the count-in by itself when that item becomes <c>Ready</c> (§5.1 rule 3). A duplicate
+    /// Start while already counting in, playing, or awaiting a download is ignored so it can never
+    /// re-anchor; Start while <c>Paused</c> is likewise a no-op (Resume preserves the position).
     /// </summary>
     public Task StartPlaybackAsync(RoomState room, CancellationToken cancellationToken) =>
         RunPlaybackCommandAsync(
@@ -334,9 +335,11 @@ public sealed partial class QueueService
                 // Start is a no-op unless the room is Idle/SongEnded. A duplicate Start while
                 // counting in or playing must not re-anchor, and a Start while Paused must not
                 // silently rewind to zero with a fresh count-in: Resume is the explicit path back
-                // to Playing (the UI only offers Start in Idle/SongEnded).
+                // to Playing (the UI only offers Start in Idle/SongEnded). A room already awaiting a
+                // download stays parked instead of re-selecting a cursor.
                 if (state.Status is PlaybackStatus.Playing
                     or PlaybackStatus.Countdown
+                    or PlaybackStatus.AwaitingDownload
                     or PlaybackStatus.Paused)
                 {
                     return null;
@@ -352,15 +355,18 @@ public sealed partial class QueueService
 
                 if (current is null)
                 {
-                    state.Status = PlaybackStatus.Idle;
-                    state.CurrentQueueItemId = null;
-                    state.PlaybackStartedAtUtc = null;
-                    state.PausedAtPositionMs = 0;
-                    state.CountdownRemainingBeats = 0;
-                    return null;
+                    var downloading = state.QueueEntries
+                        .OrderBy(entry => entry.Position)
+                        .FirstOrDefault(entry => entry.State == QueueItemState.Downloading);
+
+                    return downloading is null
+                        ? ResetToIdleLocked(state)
+                        : BeginAwaitingDownloadLocked(state, downloading);
                 }
 
-                return BeginCountdownLocked(state, current, UtcNow);
+                return current.State == QueueItemState.Downloading
+                    ? BeginAwaitingDownloadLocked(state, current)
+                    : BeginCountdownLocked(state, current, UtcNow);
             },
             cancellationToken);
 
@@ -413,7 +419,10 @@ public sealed partial class QueueService
 
     /// <summary>
     /// Restarts the current song from position zero. During the count-in this restarts the count-in
-    /// window; once the song is playing it rewinds immediately.
+    /// window; once the song is playing it rewinds immediately. A room parked in
+    /// <c>AwaitingDownload</c> mirrors Start (§5.1 rule 3): it stays parked while the cursor item is
+    /// still <c>Downloading</c> and otherwise begins the count-in, so a restart can never start a
+    /// song whose media has not landed yet.
     /// </summary>
     public Task RestartSongAsync(RoomState room, CancellationToken cancellationToken) =>
         RunPlaybackCommandAsync(
@@ -426,9 +435,19 @@ public sealed partial class QueueService
                     return null;
                 }
 
-                return state.Status == PlaybackStatus.Countdown
-                    ? BeginCountdownLocked(state, current, UtcNow)
-                    : BeginPlayingLocked(state, current, UtcNow);
+                if (state.Status == PlaybackStatus.Countdown)
+                {
+                    return BeginCountdownLocked(state, current, UtcNow);
+                }
+
+                if (state.Status == PlaybackStatus.AwaitingDownload)
+                {
+                    return current.State == QueueItemState.Downloading
+                        ? BeginAwaitingDownloadLocked(state, current)
+                        : BeginCountdownLocked(state, current, UtcNow);
+                }
+
+                return BeginPlayingLocked(state, current, UtcNow);
             },
             cancellationToken);
 
@@ -457,6 +476,59 @@ public sealed partial class QueueService
 
                 var current = FindCurrentLocked(state);
                 return current is null ? null : BeginPlayingLocked(state, current, UtcNow);
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Authority-owned completion of <c>AwaitingDownload</c> (docs/ARCHITECTURE.md §5.1 rule 3):
+    /// when the awaited head item becomes <c>Ready</c> the room starts the count-in by itself, with
+    /// no second Start press. Guarded on both the room status and the held cursor so a concurrent
+    /// Start/Skip/Remove wins cleanly.
+    /// </summary>
+    internal Task CompleteAwaitingDownloadAsync(
+        RoomState room,
+        Guid queueItemId,
+        CancellationToken cancellationToken) =>
+        RunPlaybackCommandAsync(
+            room,
+            state =>
+            {
+                if (state.Status != PlaybackStatus.AwaitingDownload
+                    || state.CurrentQueueItemId != queueItemId)
+                {
+                    return null;
+                }
+
+                var current = FindCurrentLocked(state);
+                return current is null || current.State != QueueItemState.Ready
+                    ? null
+                    : BeginCountdownLocked(state, current, UtcNow);
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Leaves <c>AwaitingDownload</c> when the awaited item failed or was ended elsewhere, so the
+    /// room does not stay parked on a cursor that can never become playable. A later Start picks up
+    /// the next playable item.
+    /// </summary>
+    internal Task CancelAwaitingDownloadAsync(
+        RoomState room,
+        Guid queueItemId,
+        CancellationToken cancellationToken) =>
+        RunPlaybackCommandAsync(
+            room,
+            state =>
+            {
+                if (state.Status != PlaybackStatus.AwaitingDownload
+                    || state.CurrentQueueItemId != queueItemId)
+                {
+                    return null;
+                }
+
+                var current = FindCurrentLocked(state);
+                return current is not null && current.State is QueueItemState.Failed or QueueItemState.Ended
+                    ? ResetToIdleLocked(state)
+                    : null;
             },
             cancellationToken);
 
@@ -568,15 +640,8 @@ public sealed partial class QueueService
             // the one clients are about to observe (write-ahead, §5.1 rule 6).
             var sequence = queueChanged ? room.NextQueueSequence() : 0;
 
-            if (playbackChanged)
-            {
-                await PersistRoomAsync(room, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (queueChanged)
-            {
-                await PersistQueueAsync(room, cancellationToken).ConfigureAwait(false);
-            }
+            await PersistRoomStateAsync(room, playbackChanged, queueChanged, cancellationToken)
+                .ConfigureAwait(false);
 
             if (queueChanged)
             {
@@ -628,15 +693,8 @@ public sealed partial class QueueService
 
         var sequence = queueChanged ? room.NextQueueSequence() : 0;
 
-        if (playbackChanged)
-        {
-            await PersistRoomAsync(room, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (queueChanged)
-        {
-            await PersistQueueAsync(room, cancellationToken).ConfigureAwait(false);
-        }
+        await PersistRoomStateAsync(room, playbackChanged, queueChanged, cancellationToken)
+            .ConfigureAwait(false);
 
         if (queueChanged)
         {
@@ -697,6 +755,7 @@ public sealed partial class QueueService
             room.PlaybackStartedAtUtc = null;
             room.PausedAtPositionMs = 0;
             room.CountdownRemainingBeats = 0;
+            room.CountdownAwaitingResume = false;
             return current;
         }
 
@@ -724,7 +783,37 @@ public sealed partial class QueueService
         room.PlaybackStartedAtUtc = nowUtc;
         room.PausedAtPositionMs = 0;
         room.CountdownRemainingBeats = PlaybackTiming.CountdownBeats;
+
+        // This count-in starts in the current process, so the authority must emit beat 4 itself
+        // rather than treat the window as a cold-restart resume (§5.1 rule 3).
+        room.CountdownAwaitingResume = false;
         return entry;
+    }
+
+    /// <summary>
+    /// Parks the room on a cursor item that is still <c>Downloading</c> (docs/ARCHITECTURE.md §5.1
+    /// rule 3). There is no anchor yet: the count-in clock starts when the download completes.
+    /// </summary>
+    private static RoomQueueEntry BeginAwaitingDownloadLocked(RoomState room, RoomQueueEntry entry)
+    {
+        room.CurrentQueueItemId = entry.Id;
+        room.Status = PlaybackStatus.AwaitingDownload;
+        room.PlaybackStartedAtUtc = null;
+        room.PausedAtPositionMs = 0;
+        room.CountdownRemainingBeats = 0;
+        room.CountdownAwaitingResume = false;
+        return entry;
+    }
+
+    private static RoomQueueEntry? ResetToIdleLocked(RoomState room)
+    {
+        room.Status = PlaybackStatus.Idle;
+        room.CurrentQueueItemId = null;
+        room.PlaybackStartedAtUtc = null;
+        room.PausedAtPositionMs = 0;
+        room.CountdownRemainingBeats = 0;
+        room.CountdownAwaitingResume = false;
+        return null;
     }
 
     private static void MarkPlayingLocked(RoomState room, RoomQueueEntry entry)
@@ -814,7 +903,24 @@ public sealed partial class QueueService
     private static Karaokay.Contracts.Hubs.QueueItemState ToWireState(QueueItemState state) =>
         (Karaokay.Contracts.Hubs.QueueItemState)(int)state;
 
-    private async Task PersistQueueAsync(RoomState room, CancellationToken cancellationToken)
+    private Task PersistQueueAsync(RoomState room, CancellationToken cancellationToken) =>
+        PersistRoomStateAsync(room, playback: false, queue: true, cancellationToken);
+
+    private Task PersistRoomAsync(RoomState room, CancellationToken cancellationToken) =>
+        PersistRoomStateAsync(room, playback: true, queue: false, cancellationToken);
+
+    /// <summary>
+    /// Persists the requested slices of room state in one scope and one <c>SaveChangesAsync</c>.
+    /// EF Core wraps that single save in one transaction, so a transition that touches both the
+    /// playback columns and the queue (Start, advance, and especially removing the current item)
+    /// is durable as a unit: a crash can never persist the playback reset while the removed row is
+    /// still queued (§5.1 rule 6).
+    /// </summary>
+    private async Task PersistRoomStateAsync(
+        RoomState room,
+        bool playback,
+        bool queue,
+        CancellationToken cancellationToken)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var database = scope.ServiceProvider.GetService<KaraokayDbContext>();
@@ -823,83 +929,69 @@ public sealed partial class QueueService
             return;
         }
 
-        var entries = room.Queue;
-        var ids = entries.Select(entry => entry.Id).ToHashSet();
-
-        var rows = await database.QueueItems
-            .Where(item => item.RoomId == room.Id)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        database.QueueItems.RemoveRange(rows.Where(row => !ids.Contains(row.Id)));
-
-        foreach (var entry in entries)
-        {
-            var row = rows.FirstOrDefault(candidate => candidate.Id == entry.Id);
-            if (row is null)
-            {
-                if (!await database.Songs.AnyAsync(song => song.Id == entry.SongId, cancellationToken)
-                        .ConfigureAwait(false))
-                {
-                    LogMissingSong(_logger, entry.SongId, room.Code);
-                    continue;
-                }
-
-                row = new QueueItem
-                {
-                    Id = entry.Id,
-                    RoomId = room.Id,
-                    SongId = entry.SongId,
-                    RequestedAtUtc = entry.RequestedAtUtc,
-                };
-                database.QueueItems.Add(row);
-            }
-
-            row.Position = entry.Position;
-            row.RequestedByName = entry.RequestedByName;
-            row.State = entry.State;
-            row.SessionTokenId = entry.SessionTokenId;
-        }
-
-        // The room row owns the monotonic sequence; write it in the same SaveChanges transaction so
-        // a cold restart resumes above every sequence a client already saw (§5.2).
+        // The room row owns the monotonic sequence; write it in the same SaveChanges as the queue
+        // so a cold restart resumes above every sequence a client already saw (§5.2).
         var roomRow = await database.Rooms
             .FirstOrDefaultAsync(row => row.Id == room.Id, cancellationToken)
             .ConfigureAwait(false);
+
         if (roomRow is not null)
         {
             roomRow.QueueSequence = room.QueueSequence;
+
+            if (playback)
+            {
+                lock (room.SyncRoot)
+                {
+                    roomRow.Status = room.Status;
+                    roomRow.CurrentQueueItemId = room.CurrentQueueItemId;
+                    roomRow.PlaybackStartedAtUtc = room.PlaybackStartedAtUtc;
+                    roomRow.PausedAtPositionMs = room.PausedAtPositionMs;
+                    roomRow.GuideVocalVolume = room.GuideVocalVolume;
+                    roomRow.CountdownRemainingBeats = room.CountdownRemainingBeats;
+                }
+            }
         }
 
-        await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task PersistRoomAsync(RoomState room, CancellationToken cancellationToken)
-    {
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var database = scope.ServiceProvider.GetService<KaraokayDbContext>();
-        if (database is null)
+        if (queue)
         {
-            return;
-        }
+            var entries = room.Queue;
+            var ids = entries.Select(entry => entry.Id).ToHashSet();
 
-        var row = await database.Rooms
-            .FirstOrDefaultAsync(candidate => candidate.Id == room.Id, cancellationToken)
-            .ConfigureAwait(false);
-        if (row is null)
-        {
-            return;
-        }
+            var rows = await database.QueueItems
+                .Where(item => item.RoomId == room.Id)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-        lock (room.SyncRoot)
-        {
-            row.Status = room.Status;
-            row.CurrentQueueItemId = room.CurrentQueueItemId;
-            row.PlaybackStartedAtUtc = room.PlaybackStartedAtUtc;
-            row.PausedAtPositionMs = room.PausedAtPositionMs;
-            row.GuideVocalVolume = room.GuideVocalVolume;
-            row.CountdownRemainingBeats = room.CountdownRemainingBeats;
-            row.QueueSequence = room.QueueSequence;
+            database.QueueItems.RemoveRange(rows.Where(row => !ids.Contains(row.Id)));
+
+            foreach (var entry in entries)
+            {
+                var row = rows.FirstOrDefault(candidate => candidate.Id == entry.Id);
+                if (row is null)
+                {
+                    if (!await database.Songs.AnyAsync(song => song.Id == entry.SongId, cancellationToken)
+                            .ConfigureAwait(false))
+                    {
+                        LogMissingSong(_logger, entry.SongId, room.Code);
+                        continue;
+                    }
+
+                    row = new QueueItem
+                    {
+                        Id = entry.Id,
+                        RoomId = room.Id,
+                        SongId = entry.SongId,
+                        RequestedAtUtc = entry.RequestedAtUtc,
+                    };
+                    database.QueueItems.Add(row);
+                }
+
+                row.Position = entry.Position;
+                row.RequestedByName = entry.RequestedByName;
+                row.State = entry.State;
+                row.SessionTokenId = entry.SessionTokenId;
+            }
         }
 
         await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
