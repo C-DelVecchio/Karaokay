@@ -286,6 +286,12 @@ RBN `.ctx` packages are **not** listed in the Onyx manual's supported inputs, so
 no claim about them (see §10). If support is confirmed later, the rule must content-verify before
 invoking Onyx — an extension-only match is not enough.
 
+**PIRS caveat (spike finding).** Onyx 20261111's own file recogniser accepts `CON `, `LIVE`, and the
+PS3 `.pkg` magic, but **not `PIRS`**. The detector deliberately keeps `PIRS` (it is a valid STFS
+signature and the platform may see it), so a PIRS input is still classified correctly here and then
+surfaces Onyx's own clean `Couldn't find a song at location: …` error (exit 1) through the §6.2
+path. That is preferable to silently dropping a container the user handed us.
+
 **Directory classification algorithm**
 
 1. **Plain wins.** If the directory already has `song.ini` **and** a discoverable MIDI **and** at
@@ -338,7 +344,16 @@ lower-case `main_ps3.hdr` variant.
 **Location:** `src/tools/Karaokay.Importer/Dlc/OnyxLocator.cs` (its tests live in
 `Karaokay.IntegrationTests`, per the placement rule in §7).
 
-**Resolution precedence (highest first):** `--onyx <path>` → `KARAOKAY_ONYX_PATH` → `PATH`.
+**Resolution precedence (highest first):**
+
+1. `--onyx <path>` (explicit; authoritative — if given and it does not resolve, the command fails
+   rather than silently falling back),
+2. `KARAOKAY_ONYX_PATH`,
+3. `PATH`,
+4. repo-local conventions, for zero-setup developer machines:
+   `.tools/squashfs-root/usr/bin/onyx` (the extracted AppImage used by this repository's spike),
+   then `.tools/onyx.AppImage`.
+
 The `--onyx` flag is part of `import`'s argument parser (`--out` and `--onyx` are the only accepted
 options; anything else stays a usage error). `--onyx` may be an executable path **or** a directory
 containing the executable; a directory is normalised by appending the platform's expected name.
@@ -351,90 +366,142 @@ containing the executable; a directory is normalised by appending the platform's
 | Linux | `onyx`, `onyx.AppImage` |
 | macOS | `onyx`, `Onyx.app/Contents/MacOS/onyx` |
 
-Linux note: an `onyx.AppImage` is executable directly; the docs also mention
-`--appimage-extract` → `squashfs-root/usr/bin/onyx` for hosts without FUSE. The locator accepts
-either, because both are just an executable path.
+**Linux environment prerequisites (spike-verified).** The AppImage runs directly only when
+`libfuse2` is installed. Without FUSE, extract it with `--appimage-extract` and use
+`squashfs-root/usr/bin/onyx`; the extracted binary may additionally need the host libraries
+`libpangoxft-1.0.so.0` and `libXft.so.2` copied into `squashfs-root/usr/lib/` (the binary's RUNPATH
+is `$ORIGIN/../lib`, so no wrapper is needed afterwards). This repository's `.tools/` already has
+that fixed-up tree, which is why the `.tools` fallback exists.
 
 **Result model**
 
 ```csharp
-internal sealed record OnyxLocation(string ExecutablePath, string Source); // Source: "--onyx" | "KARAOKAY_ONYX_PATH" | "PATH"
+internal sealed record OnyxLocation(string ExecutablePath, string Source);
+// Source: "--onyx" | "KARAOKAY_ONYX_PATH" | "PATH" | ".tools"
+
 internal static bool TryResolve(string? cliPath, out OnyxLocation location, out string searchedSummary);
 ```
 
+- Validation is **exists + executable** (Unix execute bits; on Windows `.exe` existence). There is no
+  `--version` probe: Onyx 20261111 rejects `--version` with exit 1, and the manual warns the CLI may
+  change. The real availability check is running the import step.
+- An explicit `--onyx`/`KARAOKAY_ONYX_PATH` path is accepted **as-is** when it is an existing
+  executable file: no suffix is required, and on Windows any existing executable file is accepted
+  (`.exe` is not mandatory). Directories are expanded with the platform candidate names above.
+- Known test gaps (accepted): `KARAOKAY_ONYX_TIMEOUT` parsing is not covered because it needs
+  process-wide environment mutation, and CliWrap's child-process kill is not asserted — the timeout
+  tests assert the returned `Timeout` result, not OS process state.
 - `PATH` scanning reuses the `FfmpegGuard.Detect` shape (split on `Path.PathSeparator`,
   `RemoveEmptyEntries`, trim quotes, catch `ArgumentException` for malformed entries).
-- Existence is not enough: on Unix the file must be executable (mode bits), otherwise the locator
-  skips it and records `"<path> exists but is not executable"` in the searched summary so the error
-  message can explain the near-miss.
+- Existence is not enough: on Unix a non-executable candidate is skipped and recorded as
+  `"<path> exists but is not executable"` in the searched summary so the message explains the
+  near-miss.
 - **Never** probes with a shell. The first real invocation happens in `OnyxDlcExtractor`.
-- Optional diagnostics: a best-effort `onyx --version` captured into the `import` summary (timeout
-  2 s, failure ignored) so bug reports can state the Onyx release. Not a gate — the manual warns the
-  CLI may change.
+- Tests inject the candidate list/environment (no process-wide `Environment` mutation), so the
+  precedence table above is exercised deterministically.
 
 ### 4.3 `OnyxDlcExtractor`
 
 **Location:** `src/tools/Karaokay.Importer/Dlc/OnyxDlcExtractor.cs` — **the only class in the
-repository that knows how to spell an Onyx command line.** Everything about the invocation (argv
-shape, output-format flag, working directory, timeout, exit-code interpretation, cleanup) lives
-here; nothing above it passes a flag through.
+repository that knows how to spell an Onyx command line or touch Onyx's project YAML.** Everything
+about the invocation (argv shape, target injection, working directory, timeout, exit-code
+interpretation, cleanup) lives here; nothing above it passes a flag through.
+
+**Two-step orchestration (spike-pinned, 20261111).** Onyx's CLI has no one-shot convert command; a
+Phase Shift export is an `import` into Onyx's project format followed by a target `build`:
+
+```text
+onyx import "<input>" --to "<work>/<project>"                                  # step 1
+# inject under `targets:` in "<work>/<project>/song.yml":
+#   ps:
+#     game: ps
+#     audio-format: ogg
+onyx build "<work>/<project>/song.yml" --target ps --to "<work>/out/<name>"    # step 2
+```
+
+Rules that come from the spike and are non-negotiable:
+
+- **`--to` is always passed to `import`.** Without it Onyx writes `<input>_import` next to the user's
+  copyrighted source file. Forbidden.
+- **`--to` for `build` has no extension.** Onyx picks the output shape from the extension: none →
+  folder (what we need), `.zip` → zip, `.sng` → SNG.
+- `audio-format: ogg` is written explicitly even though it is Onyx's default; it pins the codec so a
+  user's Onyx preferences cannot change the output (§4.7).
+- The target is injected by appending an indented block under the project's `targets:` key. The
+  imported project ends with `targets:`; the extractor verifies that invariant (only indented/blank
+  lines after it) and fails that input with `LayoutDrift` if a future Onyx changes the layout,
+  instead of writing possibly-invalid YAML.
+- The argv is identical on Windows/macOS/Linux; only the executable path differs (the locator owns
+  that).
+- **Input paths are resolved to absolute paths before invoking Onyx.** The extractor runs Onyx with
+  the temp work directory as its CWD, so a relative `import media/rb-ingest/...` argument would
+  resolve against the temp directory and fail with `Couldn't find a song` (caught during the first
+  real CLI run; the unit test now covers it).
 
 ```csharp
 internal sealed class OnyxDlcExtractor
 {
-    public OnyxDlcExtractor(OnyxLocation onyx, TimeSpan timeout, Action<string>? log = null);
+    public OnyxDlcExtractor(OnyxLocation onyx, TimeSpan? timeout = null, Action<string>? log = null);
 
-    // One invocation for all detected inputs (a pack is one input file that yields many songs).
+    // The caller supplies the work directory; the extractor writes project/ and out/ inside it.
     public Task<OnyxExtractionResult> ExtractAsync(
         IReadOnlyList<DlcContainer> inputs,
+        string workDirectory,
         CancellationToken cancellationToken);
 }
 
 internal sealed record OnyxExtractionResult(
-    string TempDirectory,                  // caller owns deletion
-    IReadOnlyList<string> SongFolders,     // dirs that contain song.ini, ordinal-sorted
-    IReadOnlyList<OnyxInputFailure> Failures); // per-input nonzero exit / timeout
+    IReadOnlyList<string> SongFolders,           // dirs that contain song.ini, ordinal-sorted
+    IReadOnlyList<OnyxInputFailure> Failures);   // per-input nonzero exit / timeout / produced nothing
 
-internal sealed record OnyxInputFailure(string InputPath, OnyxFailureKind Kind, int? ExitCode, string Diagnostic);
+internal sealed record OnyxInputFailure(
+    string InputPath,
+    OnyxFailureKind Kind,                        // NonZeroExit | Timeout | ProducedNothing | LayoutDrift
+    int? ExitCode,
+    string Diagnostic);
 ```
 
 **Responsibilities**
 
-1. **Temp working directory** — `Path.Combine(Path.GetTempPath(), "karaokay-onyx-" + Guid.NewGuid():N)`.
-   Deliberately **not** under the media root: `Karaokay.Api`'s `MediaLibrary.Scan()` walks every
-   immediate subdirectory of `MediaRoot` and *silently* `continue`s past one missing
-   `instrumental.opus`/`lyrics.json` (`Features/MediaLibrary.cs:135-138`). A half-extracted folder
-   there would therefore be a phantom entry that never appears in `/api/songs` and never explains
-   itself, and an in-progress extraction would race every media-root scan. Keeping the temp tree in
-   the OS temp directory means extraction is invisible to the API until each song is fully baked and
-   moved into the library.
-2. **Invocation** — `Cli.Wrap(location.ExecutablePath).WithArguments(argv)` with
-   `CommandResultValidation.None`, `WorkingDirectory = tempDir`, stdout+stderr captured separately
-   and capped (keep the last 64 KiB of each, plus a total line cap for messages).
-3. **Output discovery** — after a run, enumerate subdirectories of `tempDir` (bounded depth 3, in
-   practice depth 1–2 because Onyx's export template decides the nesting) and keep those containing
-   `song.ini`. Zero folders after a zero exit is itself a failure (`OnyxProducedNothing`), reported
-   with a stderr tail — that combination means CLI drift or a preference problem, and it must not be
-   silently "0 songs imported".
-4. **Exit-code interpretation** — `0` = success; non-zero = `OnyxFailureKind.NonZeroExit` carrying
-   the code; killed by timeout/cancellation = `Timeout`. Never parse Onyx's human output for
-   semantics; it is diagnostic text only.
-5. **Timeout** — default **15 minutes per invocation** (a large pack decrypt + transcode is slow),
-   overridable via `KARAOKAY_ONYX_TIMEOUT` (`TimeSpan.Parse`, invariant culture; documented values
-   like `00:30:00`). On expiry the process **tree** is killed, then the extractor returns a
-   `Timeout` failure; a stuck child must not hang the CLI.
-6. **Cleanup** — on any failure the extractor deletes `TempDirectory` before returning (best effort,
-   swallowing `IOException`/`UnauthorizedAccessException`, mirroring `ImportCommand.TryDeleteFile`).
-   On success the caller deletes it after importing; if the process dies mid-import the OS temp
-   cleaner reclaims it.
-7. **Multi-input policy** — all detected containers in a directory go into **one** invocation (that
-   is how packs and multi-file PS3 DLC are shaped). If the spike shows one-input-per-run is more
-   reliable on some platform, the fallback is a sequential loop inside this class only; the caller
-   never learns the difference. Per-input failures in that loop are collected, not thrown.
+1. **Work directory (caller-owned).** `ImportCommand` creates
+   `Path.Combine(Path.GetTempPath(), "karaokay-onyx-" + Guid.NewGuid():N)` and deletes the **whole**
+   tree in `finally` — success *and* failure — because Onyx leaves both the project (including its
+   `gen-<timestamp>-<timestamp>/` build trees) and `out/` inside it. Deliberately **not** under the
+   media root: `MediaLibrary.Scan()` silently `continue`s past directory entries without
+   `instrumental.opus`/`lyrics.json`, so a half-extracted folder there would be a phantom that never
+   appears in `/api/songs` and never explains itself, and an in-progress extraction would race every
+   media-root scan.
+2. **Per-input sequence.** One import + YAML injection + one build per input, sequentially (a
+   discovered directory may hold several containers). Each step writes into its own project tree;
+   inputs are processed in the detector's ordinal order so failures and discovery are deterministic.
+3. **Process execution** — `Cli.Wrap(location.ExecutablePath).WithArguments(argv)` with
+   `CommandResultValidation.None`, `WorkingDirectory = workDirectory`, stdout+stderr captured
+   separately and capped (last 64 KiB of each, ANSI-stripped, last ~20 lines printed). Arguments are
+   passed as an array (no shell, no quoting bugs for names like `a-ha - Take on Me`).
+4. **Exit codes are the only success signal.** `0` = success; non-zero =
+   `OnyxFailureKind.NonZeroExit` carrying the code. Onyx prints
+   `Warning: An external program was not found on your PATH … checking if Wine is installed` on every
+   run in a Wine-less environment; that warning is **informational** and never treated as failure.
+   Magma/Wine is only required to *build* Rock Band packages, not Phase Shift folders.
+5. **Output discovery.** After a successful build, enumerate subdirectories of `<work>/out` (bounded
+   depth 3; Onyx writes the folder directly at the `--to` path) and keep those containing
+   `song.ini`. Zero folders after a zero exit is `OnyxFailureKind.ProducedNothing` (§6.8), reported
+   with a stderr tail — never a silent “0 songs imported”.
+6. **Timeout** — default **15 minutes per input, covering both steps** (the spike measured ~35 s per
+   build), overridable via `KARAOKAY_ONYX_TIMEOUT` (`TimeSpan.Parse`, invariant culture; values such
+   as `00:30:00`). On expiry the process **tree** is killed and that input yields
+   `OnyxFailureKind.Timeout`; a stuck child must not hang the CLI.
+7. **Failure continuation.** A failed input is recorded and the next input still runs. The extractor
+   never imports anything itself; it returns folders and failures, and `ImportCommand` owns the
+   user-facing per-song loop (§4.4).
+8. **Pack caveat (unverified).** Both spike inputs were single-song CONs. `onyx import` on a
+   multi-song pack may produce a multi-song project whose `build` layout differs; discovery is the
+   best-effort “any subdirectory containing `song.ini`” rule, and an unexpected layout becomes
+   `ProducedNothing`/`LayoutDrift` for that input rather than a guess (§5, §8).
 
-**Security hygiene** — arguments are passed as an array (no shell, no quoting bugs, no injection via
-file names such as `a-ha - Take on Me`); stderr/stdout are treated as untrusted text (strip ANSI
-escapes and control characters, truncate to the last ~20 meaningful lines) before printing.
+**Security hygiene** — stderr/stdout are treated as untrusted text (strip ANSI escapes and control
+characters, truncate the last ~20 meaningful lines before printing); the work directory is the only
+place Onyx writes.
 
 ### 4.4 `ImportCommand` integration
 
@@ -454,18 +521,18 @@ import <dir|file> [--out <outRoot>] [--onyx <path>]
    the existing body unchanged (§4.0). Otherwise — and for any **file** input — **classify** with
    `DlcContainerDetector` (`ClassifyDirectory`/`ClassifyFile`).
 2. **`PlainSongFolder`** → run the existing body exactly as today (extract it into a private
-   `ImportSongFolderAsync(directory, outRoot, ct)` so the multi-song loop can reuse it). No Onyx
+   `ImportDirectoryAsync(directory, outRoot, ct)` so the multi-song loop can reuse it). No Onyx
    lookup, no behaviour change, no extra output.
 3. **`Unknown`** → the §6.4 message, exit 1.
-4. **`EncryptedContainers`** → resolve Onyx (`OnyxLocator`); not found → §6.1 message (PS3 caveat
-   appended when any detected container `IsPs3`), exit 1. Found → `OnyxDlcExtractor.ExtractAsync`,
-   then:
-   - iterate `SongFolders` in ordinal order, importing each via the same private method;
-   - catch per-song failures and **continue** — the existing import path already prints that song's
-     own `error:` line, so the pre-stage adds no second per-song failure format (§6.6);
-   - after the loop print an aggregate (`imported N of M songs from '<input>'`), and return
-     `ExitFailure` if any song failed (or extraction failed outright), else `ExitSuccess`;
-   - delete the temp directory in `finally`.
+4. **`EncryptedContainers`** → resolve Onyx (`OnyxLocator`). Not found → §6.1 message (PS3 caveat
+   appended when any detected container `IsPs3`), exit 1. Found → create the temp work directory, run
+   `OnyxDlcExtractor.ExtractAsync`, then:
+   - print one §6.2 / §6.3 / §6.8 block per `OnyxInputFailure` (naming the input and its stderr tail);
+   - import each returned `SongFolders` entry in ordinal order through the same private method;
+   - per-song failures use the existing `error:` line and **continue** (§6.6);
+   - print `import summary: imported N of M songs from '<input>'` (M = folders returned); return
+     `ExitSuccess` only if every input extracted and every song imported, else `ExitFailure`;
+   - delete the **whole** work directory in `finally` (success and failure).
 
 **Default out root.** Unchanged for directories (`<dir>/karaokay-out`). For a **file** input, the
 default is `<parent of file>/karaokay-out`, so `import "media/rb-ingest/a-ha - Take on Me"` writes
@@ -475,6 +542,12 @@ next to the input rather than into a non-existent "file directory".
 (`song_id` → slug of `name` → slug of directory name), with the existing collision handling. Onyx's
 export folder names are irrelevant to the final library id — a useful property, because Onyx's
 folder-name template may change (see §9).
+
+**Onyx's `song.ini` (spike fact).** It contains `[song]`, `name`, `artist`, `album`, `year`, `genre`,
+the `diff_*` keys, `song_length`, preview times, and `track` — but **no `delay`, `charter`, or
+`song_id`**. `SongIniReader` already tolerates all three absences (`DelayMs = 0`, `Charter`/`SongId`
+null), so ids resolve from the slug of `name` (`take-on-me`, `buffalo-soldier` in the spike) and the
+lyric offset stays 0. No code change is required; this is recorded so nobody “fixes” the missing keys.
 
 **Output discipline worth preserving.** Each imported song is still baked to temp files and moved
 into place only when all three outputs exist. A pack where song 3 fails leaves songs 1–2 complete and
@@ -553,86 +626,95 @@ but delegates the extension and prefix predicates. In Increment 1 this is a pure
 is unchanged (`.ogg`/`.oga` only) and the only functional delta is the `scan` instrumental rule
 (§4.5). `.opus` acceptance arrives in Increment 2 (§4.7).
 
-### 4.7 Audio format decision: accept `.opus` stems
+### 4.7 Audio format: Ogg Vorbis pinned, `.opus` accepted as future-proofing
 
-**Problem.** Onyx's Phase Shift export can write Ogg Vorbis or Opus, and the choice follows Onyx's
-persisted preferences, not a documented flag we can rely on (the CLI is explicitly undocumented and
-may change). Making the pre-stage depend on Onyx preference state would create a configuration
-coupling we cannot test.
+**Spike result.** Onyx 20261111's Phase Shift target defaults to **Ogg Vorbis** (`audio-format` key,
+default `"ogg"`) and emitted 44.1 kHz stereo `.ogg` stems for both real-file conversions. The
+extractor writes `audio-format: ogg` explicitly, so the pre-stage does not depend on Onyx
+preferences at all.
 
-**Decision (recommended).** Teach the importer to accept `.opus` stems, and treat "prefer Vorbis in
-Onyx" as a nicety to set when the spike finds a flag, not as a requirement.
+**Decision.** `.opus` stem acceptance still lands in Increment 2 as approved future-proofing (Onyx
+and Clone Hero both support Opus output), but it is **not load-bearing** for this feature: the Onyx
+path emits Vorbis. `SongFolderProbe.IsAudioStemFile` accepts `.ogg`, `.oga`, and `.opus`.
 
-- `SongFolderProbe.IsAudioStemFile` gains `.opus` alongside `.ogg`/`.oga` (Increment 2; Increment 1
-  ships the helper with the current two extensions so the refactor can be reviewed on its own).
 - **Duplicate protection:** a folder containing both `song.ogg` and `song.opus` must not mix the same
-  stem twice. `StemSet.Discover` groups by basename and prefers `.ogg`/`.oga` over `.opus`; the
-  loser is ignored (and noted in `scan` output only if it is the sole copy of a distinct stem).
-- Cost: one predicate change plus the dedupe rule; both are unit-testable without Onyx.
-- Consequence: the extracted folder's stems feed `StemMixer` unchanged, which re-encodes everything
-  to Opus at −16 LUFS anyway — the intermediate codec only affects decode compatibility, and
-  `libopus`/`libvorbis` are both in the FFmpeg builds the project already requires (`FfmpegGuard`,
-  CI `apt install ffmpeg`).
+  stem twice. Selection groups by basename and prefers `.ogg`/`.oga` over `.opus`; the loser is
+  ignored.
+- Cost: one predicate change plus the dedupe rule, both unit-tested without Onyx.
+- Consequence: extracted stems feed `StemMixer` unchanged, which re-encodes everything to Opus at
+  −16 LUFS anyway — the intermediate codec only affects decode compatibility, and `libopus`/
+  `libvorbis` are both in the FFmpeg builds the project already requires.
+- Why keep it: a future Onyx default change, or a user's own Opus PS/CH folder passed to `import`,
+  works without another importer change.
 
-**Rejected alternative:** require Onyx preferences to be set to Ogg Vorbis. Rejected because it is
-untestable in CI, invisible in a headless run, and exactly the kind of undocumented-CLI dependency
-ADR-010 is trying to contain.
+**Not chosen:** relying on Onyx preferences for the codec. Rejected because it is invisible in a
+headless run; the explicit `audio-format` key removes the coupling entirely.
 
 ---
 
 ## 5. Onyx invocation contract
 
-### 5.1 What we need from the CLI
+### 5.1 The contract we now implement
 
-One operation, stated as a contract rather than a command line:
+Onyx's CLI does **not** expose a one-shot converter (spike, 20261111). The contract is two commands
+plus a small, validated project-YAML edit:
 
 ```text
-onyx <convert/decode verb> <input container>... --output <directory> --format "Phase Shift"
-  ⇒ <directory>/<template>/song.ini
-    <directory>/<template>/notes.mid
-    <directory>/<template>/song.ogg|opus, guitar.*, bass.*, drums.*, keys.*, vocals.*, crowd.*
+onyx import <input> --to <work>/<project>
+  ⇒ <project>/song.yml, audio.mogg, notes.mid, …
+(edit under `targets:`:  ps: { game: ps, audio-format: ogg })
+onyx build <project>/song.yml --target ps --to <work>/out/<name>    # no extension ⇒ folder
+  ⇒ <work>/out/<name>/song.ini, notes.mid, album.png,
+    song.ogg, guitar.ogg, rhythm.ogg, drums.ogg | drums_1.ogg + drums_2.ogg, keys.ogg, vocals.ogg
 ```
 
-Requirements:
+Requirements, with the spike verdict:
 
-1. Accept an STFS file (CON/LIVE/PIRS signature), a PS3 `.pkg`, a bare `.mogg`, or an `.ARK`
-   directory as input; decrypt MOGG audio itself.
-2. Write a **Phase Shift / Clone Hero** folder: `song.ini` + `notes.mid` + per-stem audio, with
-   PS/CH stem basenames (`song`, `guitar`, `bass`, `drums`, `keys`, `vocals`, `crowd`).
-3. Write **into a caller-specified directory** (not next to the input, not into a global library).
-4. Emit **multiple song folders** for a multi-song pack, without interaction.
-5. Exit `0` on success; non-zero on failure with a human-readable reason on stderr.
-6. Never require Magma/Wine for this path (only package *building* needs them).
+1. ✅ Accept an STFS `CON `/`LIVE` file, a PS3 `.pkg`, a bare `.mogg`, or an unpacked `.ARK`, and
+   decrypt the MOGG itself. (`PIRS` is not in Onyx's recogniser — §4.1.)
+2. ✅ Write a **flat** Phase Shift folder: `song.ini` + `notes.mid` + per-stem Ogg Vorbis
+   (`song`, `guitar`, `rhythm`, `drums` or `drums_1`/`drums_2`, `keys`, `vocals`) + `album.png`.
+   No `crowd.ogg` appeared in the spike; the importer's stem rules already handle it if present.
+3. ✅ Write into a caller-specified path (`--to`), never next to the input.
+4. ⚠️ Multi-song packs: **unverified**. Both spike inputs were single-song CONs; layout drift becomes
+   `ProducedNothing`/`LayoutDrift` for that input rather than a guess (§4.3, §8).
+5. ✅ Exit `0` on success; non-zero with a human-readable reason on failure (e.g. `Couldn't find a
+   song at location: …` for unrecognised input).
+6. ✅ No Magma/Wine required for this path; the Wine warning on stderr is informational.
 
-### 5.2 The spike (Increment 2, first task)
+### 5.2 Spike results (pinned, 20261111)
 
-The manual says command-line usage "is not documented here and is subject to change", so the exact
-argv is **pinned empirically before the wrapper is frozen**. Deliverable: a short note in the
-implementation PR (and a comment block above `BuildArguments`) recording, per platform:
+Run against `onyx-20261111-linux-x64.AppImage` (sha256-verified) on the two real files in
+`media/rb-ingest/`. These are now the implementation's pinned facts:
 
-| Question | How to answer |
+| Question | Result |
 |---|---|
-| Top-level verb and its options | `onyx --help` |
-| Convert/export verb spelling and output flag | `onyx <verb> --help`, iterate |
-| Export-format name for Phase Shift/Clone Hero | `onyx <verb> --help`; try the documented GUI export names |
-| Output directory semantics (one dir vs per-song subdir) | Run on one CON file into an empty dir; list the tree |
-| Audio format default and whether a flag overrides it | Resulting extensions; if no flag exists, rely on §4.7 |
-| Multi-input / pack behaviour | Run with two CON files and with one pack file |
-| Exit codes for "unsupported input" vs "corrupt input" | Deliberately feed a truncated container |
-| Windows console build path and Linux AppImage invocation | Run each platform's artifact |
-| `onyx-resources/raps/` lookup location | PS3 `.pkg` run without/with a RAP file |
+| Top-level verb for export | none — `import` + `build --target ps` |
+| `import` output path | `--to` (without it: `<input>_import` beside the input — forbidden) |
+| Target YAML needed | `ps: { game: ps, audio-format: ogg }` under `targets:` |
+| `build --to` shape | no extension ⇒ folder; `.zip` ⇒ zip; `.sng` ⇒ SNG |
+| Audio format | Ogg Vorbis, 44.1 kHz, stereo (`codec_name=vorbis`) |
+| Output layout | flat folder; stems `song/guitar/rhythm/drums{,_1,_2}/keys/vocals` + `notes.mid`, `song.ini`, `album.png` |
+| Durations | import ≈ 1.0–1.4 s; build ≈ 33.6–34.5 s; whole import of one song ≈ 37–42 s |
+| Exit codes | 0 on success; 1 with a clean error for unrecognised input |
+| Wine/Magma | Wine warning on stderr every run; neither is needed for PS export |
+| Multi-song pack | **not observed** (both inputs single-song) |
+| `onyx --version` | unsupported (exit 1) — never used for validation |
+| PS3 RAP lookup | not exercised in the spike |
 
-**Isolation requirement (repeat, because it is the mitigation):** the pinned recipe exists **only**
-inside `OnyxDlcExtractor.BuildArguments` (plus its unit test). No other file may contain an Onyx
-flag, and no flag may be passed in from configuration. CLI drift is then a one-file, one-test fix.
+**Isolation requirement (repeat, because it is the mitigation):** the pinned recipe (both argv
+shapes plus the YAML injection) exists **only** inside `OnyxDlcExtractor` (plus its unit tests). No
+other file may contain an Onyx flag, and no flag may be passed in from configuration. CLI drift is
+then a one-file, one-test fix.
 
 ### 5.3 Release pinning
 
-The onyxite.org manual documents **20240120**, and several newer releases exist. That is a *doc*
-version, not a tested one: the **actual tested release is pinned by the Increment-2 spike** and
-recorded in the implementation note, in `OnyxLocator`'s best-effort version log, and in the importer
-usage text. Mismatches are **reported, not enforced**: an older release may work; a newer one may
-change flags, which is exactly why the recipe lives in one class.
+The onyxite.org manual documents **20240120**; the spike tested **20261111**
+(`onyx-20261111-linux-x64.AppImage`). That tested release is recorded here, in the implementation
+note, and in the locator's missing-Onyx message; a mention in the importer **usage text** belongs to
+Increment 3's documentation pass. Mismatches are **reported, not enforced**: an older release may
+lack the same YAML target keys, and a newer one may change flags, which is exactly why the recipe
+lives in one class.
 
 ---
 
@@ -648,16 +730,25 @@ traces; nothing printed to stdout that a scripter would mistake for success; exi
 ```text
 error: encrypted Rock Band DLC detected in 'media/rb-ingest' but Onyx was not found.
        Detected: 2 containers (STFS CON x2).
-       Searched: --onyx (not given), KARAOKAY_ONYX_PATH (unset), PATH (7 entries).
-       Onyx decrypts Rock Band CON/LIVE/PIRS and PS3 packages. Install a current release (the
-       onyxite.org manual documents 20240120) from https://github.com/mtolly/onyx/releases,
-       then choose one:
+       Searched: --onyx (not given), KARAOKAY_ONYX_PATH (unset), PATH (7 entries), .tools (not found).
+       Onyx decrypts Rock Band CON/LIVE (Xbox 360) and PS3 packages (with RAP files).
+       Install a current release (the
+       onyxite.org manual documents 20240120; the tested release is 20261111) from
+       https://github.com/mtolly/onyx/releases, then choose one:
          - add the onyx executable to PATH,
          - set KARAOKAY_ONYX_PATH=/path/to/onyx,
          - pass --onyx /path/to/onyx.
        macOS: Onyx.app/Contents/MacOS/onyx. Linux: onyx.AppImage (or --appimage-extract).
        Windows: use the 'command-line' release build, not the GUI build.
+       Linux notes: the AppImage needs libfuse2; without FUSE run squashfs-root/usr/bin/onyx,
+       and if needed copy libpangoxft-1.0.so.0/libXft.so.2 into squashfs-root/usr/lib/.
 ```
+
+The `Searched:` line depends on what the user supplied. When an explicit `--onyx` or
+`KARAOKAY_ONYX_PATH` value was present but did not resolve, the message lists **that level only**
+(the rejected path is the actionable fact); otherwise it lists all four precedence levels, including
+the repo-local `.tools` convention (`.tools/squashfs-root/usr/bin/onyx`, then
+`.tools/onyx.AppImage`) so local developers know the zero-setup option.
 
 With a PS3 input, append one indented block:
 
@@ -686,6 +777,10 @@ PS3 inputs additionally get the RAP hint appended when stderr mentions a licence
 failure (case-insensitive match on `rap`, `license`, `licence`, `decrypt`, `key`) — the hint is
 *additive*, never a replacement for Onyx's own text.
 
+Onyx prints `Warning: An external program was not found on your PATH … checking if Wine is
+installed` on stderr in every Wine-less environment. That warning is **informational**: the exit code
+is the only success signal, and the extractor never fails on stderr content alone.
+
 ### 6.3 Onyx timeout
 
 ```text
@@ -695,12 +790,15 @@ error: Onyx did not finish extracting 'media/rb-ingest/Bob Marley and the Wailer
        KARAOKAY_ONYX_TIMEOUT=00:30:00 and re-run. Onyx output was discarded.
 ```
 
+The timeout covers **both** steps (`import` + `build`) for one input; the spike measured ~35 s per
+build, so 15 minutes is generous headroom for large packs.
+
 ### 6.4 Unsupported / unrecognized input
 
 ```text
 error: 'media/rb-ingest/whatever.txt' is not a song folder and not a container Karaokay recognizes.
        Expected one of:
-         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga stems
+         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga/*.opus stems
          - an STFS package (Xbox 360 Rock Band DLC, CON/LIVE/PIRS)
          - a PS3 .pkg or encrypted .mid.edat
          - a bare .mogg or an unpacked .ARK (MAIN.HDR / main_xbox.hdr / main_ps3.hdr)
@@ -708,8 +806,7 @@ error: 'media/rb-ingest/whatever.txt' is not a song folder and not a container K
        docs/specs/rb-dlc-onyx-prestage.md.
 ```
 
-Increment 1 lists `*.ogg`/`*.oga` only, matching what the importer accepts today; `.opus` joins the
-expected-inputs text in Increment 2 together with §4.7.
+Increment 2 lists `*.opus` alongside `*.ogg`/`*.oga`, matching `SongFolderProbe` (§4.7).
 
 Empty directory keeps today's phrasing plus the hint (it is `Unknown`, not encrypted):
 
@@ -760,8 +857,14 @@ per-song lines still print, then `import summary: imported 0 of M songs from '<i
 
 **Zero folders extracted is not this case.** If Onyx exits 0 but produces no folder containing
 `song.ini`, no per-song import runs at all; that is an invocation-level failure of the Onyx step
-(§4.3 responsibility 3) and reports through §6.2's `OnyxProducedNothing` path, never as a
-`0 of 0` summary.
+(§4.3 responsibility 5) and reports through §6.8's `ProducedNothing` path, never as a `0 of 0`
+summary.
+
+When **extraction itself** fails for some inputs while other inputs still produce songs, each failed
+input gets its §6.2/§6.3/§6.8 block and, if the remaining songs all import, one final line:
+`error: N of M inputs failed to extract; the successful songs were kept.` This is an
+extraction-level aggregate only; partial song imports inside successful inputs use the song-level
+aggregate above. Exit code is 1 either way.
 
 ### 6.7 Exit-code table
 
@@ -769,8 +872,22 @@ per-song lines still print, then `import summary: imported 0 of M songs from '<i
 |---|---|
 | Plain folder or encrypted folder fully imported | 0 |
 | `scan` with no matches (plain or encrypted) | 0 |
-| Onyx missing / Onyx failed / timeout / unknown input / any song failed | 1 |
+| Onyx missing / Onyx failed / timeout / produced nothing / unknown input / any song failed | 1 |
 | Bad arguments (`--onyx` without value, two positionals, unknown flag) | 2 |
+
+### 6.8 Onyx produced no song folder
+
+Onyx exited 0 but `<work>/out` contained no directory with `song.ini` (CLI drift, an unexpected
+pack layout, or a preference problem):
+
+```text
+error: Onyx reported success for 'media/rb-ingest/a-ha - Take on Me' but produced no song folder.
+       Expected a folder containing song.ini under the build output. Onyx said (last lines):
+         | <stderr tail>
+       Nothing was imported from this input.
+```
+
+Exit 1 for that input; other inputs still run (§4.3).
 
 ---
 
@@ -818,41 +935,53 @@ no throw.
 
 ### 7.2 Unit-level — locator, argv, exit codes (fake `onyx`)
 
-- `OnyxLocatorTests`: precedence `--onyx` > `KARAOKAY_ONYX_PATH` > `PATH`; directory form
-  (`--onyx /opt/onyx` finds `/opt/onyx/onyx`); non-executable candidate skipped with a note; the
-  missing-Onyx message contains the install URL, all three mechanisms, and (for PS3 input) the RAP
-  caveat. Env-var mutation is confined to a dedicated xUnit collection (`[Collection]`) so it cannot
-  race other tests; the locator takes an injectable environment accessor rather than reading
-  `Environment` directly.
-- `OnyxDlcExtractorTests`: argv built by `BuildArguments` matches the pinned recipe exactly (this
-  test is the drift alarm); non-zero exit → `NonZeroExit` with stderr tail; a fake executable that
-  exits 0 but writes no `song.ini` → `OnyxProducedNothing`; a fake that sleeps past a 200 ms timeout
-  → `Timeout` and the temp directory is gone; ANSI escapes stripped; 10 MB of stderr truncated.
-  Fakes: a committed `fake-onyx.sh` (POSIX, `chmod +x` in the repo) for Linux/CI, and a
-  `fake-onyx.cmd` for Windows; tests that need the shim are `[Trait("Category", "RequiresPosixShim")]`
-  or use a generated script so Windows CI is not wedged. Exit-code interpretation itself is tested
-  by a C# fake process only where a shim is unavailable.
+- `OnyxLocatorTests`: precedence `--onyx` > `KARAOKAY_ONYX_PATH` > `PATH` > `.tools` (extracted
+  binary, then AppImage); directory form (`--onyx /opt/onyx` finds `/opt/onyx/onyx`); a
+  non-executable candidate is skipped with an `exists but is not executable` note; the missing-Onyx
+  message contains the install URL, all four mechanisms, the Linux FUSE/lib hints, and (for PS3
+  input) the RAP caveat. Tests inject the candidate environment (no process-wide `Environment`
+  mutation), so precedence is deterministic.
+- `OnyxDlcExtractorTests` (POSIX fake `onyx` generated by the test, skipped on Windows):
+  - step 1 argv is exactly `import <input> --to <work>/<project>` and **always** contains `--to`;
+  - step 2 argv is exactly `build <project>/song.yml --target ps --to <work>/out/<name>`, with **no
+    extension** on the final `--to`;
+  - `song.yml` is verified by the fake to contain `ps:`, `game: ps`, `audio-format: ogg` under
+    `targets:` (the test captures the file from the fake's second step);
+  - non-zero exit → `NonZeroExit` with a capped, ANSI-stripped stderr tail;
+  - a fake that ignores the build and writes nothing → `ProducedNothing`;
+  - a fake that sleeps (0.3 s per step under a shared 450 ms per-input budget, or a hang against a
+    300 ms budget) → `Timeout`; the test asserts the `TimedOut` outcome, not the OS-level
+    child-process kill (see §4.2);
+  - a fake that writes an unexpected `targets:` layout → `LayoutDrift`;
+  - the work directory is entirely caller-owned/cleaned by `ImportCommand` (asserted in the
+    ImportCommand test by counting `karaokay-onyx-*` directories before/after a failed run).
 - `ScanCommandTests`: a root with two loose containers (the `media/rb-ingest` shape) prints exactly
   one `. | requires Onyx — 2 encrypted containers (STFS CON x2)` line; a directory holding a single
   container prints one line with `1 encrypted container`; container rows are not counted as
   importable songs; vocals-only folders are no longer advertised as importable (§4.5); plain-folder
   output is byte-identical to today's expected line for the existing fixture.
+- `SongFolderProbeTests`/`StemSelectionTests`: `.opus` stems are selected; a folder with both
+  `song.ogg` and `song.opus` mixes that stem once (`.ogg` wins); `IsImportable` accepts an
+  Opus-only instrumental.
 
 ### 7.3 Integration — `OnyxGuard` (skip, don't fail)
 
-`src/tests/Karaokay.IntegrationTests/OnyxGuard.cs`, mirroring `FfmpegGuard`'s structure
-(`Lazy<bool>`, `PATH` split, platform suffix `onyx`/`onyx.exe`) with **one deliberate difference**:
-Onyx is optional, so the guard **skips** rather than fails. `FfmpegGuard.Require()` throws because
-every importer e2e test needs FFmpeg; a missing Onyx must not turn a normal `dotnet test` red.
+`src/tests/Karaokay.IntegrationTests/OnyxGuard.cs`. Onyx is optional, so the guard **skips** rather
+than fails. `FfmpegGuard.Require()` throws because every importer e2e test needs FFmpeg; a missing
+Onyx must not turn a normal `dotnet test` red.
 
 ```csharp
 internal static class OnyxGuard
 {
-    public static bool IsAvailable { get; }          // Lazy, detects onyx[/.exe] on PATH
+    public static bool IsAvailable { get; }          // Lazy; OnyxLocator.TryResolve with the real environment
     public static string? ExecutablePath { get; }
     public static void SkipIfUnavailable();           // Skip.If(!IsAvailable, "…") — called from a [SkippableFact]
 }
 ```
+
+The guard resolves through the **same `OnyxLocator` precedence** as the product, so on this machine
+it finds `.tools/squashfs-root/usr/bin/onyx` with no environment setup, while honouring
+`KARAOKAY_ONYX_PATH`/`PATH` on a developer box. Test code does not carry its own PATH-scanning copy.
 
 The skip mechanism is the repo's existing one, not `Assert.Skip`: xUnit 2.9.3 has no
 `Assert.Skip`, so these tests follow the `Xunit.SkippableFact` convention already used by
@@ -871,19 +1000,24 @@ public async Task ImportingARealContainerProducesTheThreeFileLayout()
 body; it throws the skip exception the runner understands. `Karaokay.IntegrationTests` already
 references `Xunit.SkippableFact`, so no package change is needed.
 
-Test: `OnyxDlcExtractorEndToEndTests` — `import` on a directory containing one real container, or on
-`import "<file>"`, asserts the three-file layout via `VerifyCommand.Execute`, non-zero exit + exact
-message when `KARAOKAY_ONYX_PATH` points at a non-executable path, and the multi-song path when a
-pack is available.
+Test: `OnyxDlcExtractorEndToEndTests` — `[SkippableFact]`, skipped when Onyx is absent **or** the two
+real files are absent from `media/rb-ingest/` (the folder is gitignored and machine-specific). It
+runs `import media/rb-ingest --out /tmp/opencode/onyx-e2e`, asserts exit 0, the console line
+`import summary: imported 2 of 2 songs from 'media/rb-ingest'`, and that
+`take-on-me/` and `buffalo-soldier/` each contain `instrumental.opus`, `vocals.opus`, and
+`lyrics.json` (slug ids from Onyx's `song.ini`, which has `name`/`artist` but no `song_id`). Output
+stays under `/tmp/opencode` and is never committed.
 
 **Fixture policy (hard rule, C2):**
 
 - **No copyrighted DLC bytes are ever committed.** Not truncated, not "just the header of a real
   file", not in LFS. The detector fixtures are hand-built magic + zeros.
-- The round-trip test may look for `media/rb-ingest/` **when it exists locally** (developer machines
-  — this is exactly how the two current files get exercised) and must `Skip` cleanly when it does
-  not. It must never assert on file names, counts, or content of that folder, because the folder is
-  gitignored and machine-specific.
+- The round-trip test is **skip-guarded**: it must never fail when `media/rb-ingest/` or the two
+  known files are absent, and it never runs in CI without them. When the known two files are present
+  locally, the test may assert their observed names/slugs (`take-on-me`, `buffalo-soldier`) and the
+  `2 of 2` count — that is the point of the local-only test. It must not assert on the source files'
+  bytes/content, and it must not assume that a *different* user file dropped into that gitignored
+  folder will match those names.
 - Optional, explicitly flagged: **generating** a synthetic encrypted container with Onyx itself
   (Magma/Wine required to *build*) for local verification only. Not in CI, not a committed fixture,
   not a dependency of any test. If it is ever built, the generator script lives outside the test
@@ -949,32 +1083,41 @@ Acceptance criteria:
 
 Deliverables:
 
-- Onyx usage spike (§5.2) with its findings recorded.
-- `OnyxLocator` + `--onyx` flag + `KARAOKAY_ONYX_PATH`.
-- `OnyxDlcExtractor` with temp dir, single invocation point, timeout, capped stderr, cleanup,
-  multi-input policy.
-- `ImportCommand` pre-stage: extraction, per-song loop, aggregate summary, pack continuation.
-- `.opus` stem acceptance + duplicate-stem dedupe (§4.7) and the corresponding `StemSet` tests.
-- `OnyxGuard` + guarded e2e test; fake-Onyx unit-level tests — all in `Karaokay.IntegrationTests`
-  (§7).
+- Spike results recorded (§5.2) and the tested release pinned (**20261111**, §5.3).
+- `OnyxLocator` with precedence `--onyx` > `KARAOKAY_ONYX_PATH` > `PATH` > `.tools` (extracted
+  binary, then AppImage), exists+executable validation, near-miss reporting, and the §6.1 message
+  including FUSE/lib hints.
+- `OnyxDlcExtractor`: two-step `import`/`build` orchestration, validated `ps` target injection
+  (`game: ps`, `audio-format: ogg`), `--to` always present, caller-owned work directory cleaned on
+  success **and** failure, 15-minute per-input timeout with `KARAOKAY_ONYX_TIMEOUT`, capped stderr,
+  per-input failure continuation, `ProducedNothing`/`LayoutDrift` handling.
+- `ImportCommand` pre-stage: locate → extract → per-folder existing import path, continue-on-failure,
+  `import summary: imported N of M songs from '<input>'`, aggregate exit code, work-dir cleanup in
+  `finally`.
+- `.opus` stem acceptance + duplicate-basename dedupe (§4.7); `*.opus` in the §6.4 expected-inputs
+  text; `--onyx <path>` in the usage text.
+- `OnyxGuard` + the real two-file round trip; fake-Onyx locator/extractor/ImportCommand tests — all
+  in `Karaokay.IntegrationTests` (§7).
 
 Acceptance criteria:
 
-1. With the spike-pinned Onyx release on `PATH`, `import "media/rb-ingest/a-ha - Take on Me" --out
-   /tmp/out` and `import media/rb-ingest --out /tmp/out` both produce one `verify`-passing folder per
-   song (`instrumental.opus`, `vocals.opus`, `lyrics.json`), with `song.ini`-derived ids and −16 LUFS
-   instrumental (±1 LU, measured as in `ImporterEndToEndTests`).
-2. Without Onyx, the §6.1 text is printed verbatim (a unit test asserts the string, so the install
-   URL and the three mechanisms cannot rot silently), exit 1, and nothing is written to `--out`.
-3. `KARAOKAY_ONYX_PATH` and `--onyx` each resolve a non-`PATH` install; `--onyx` wins over
-   `KARAOKAY_ONYX_PATH`.
-4. A fake Onyx that exits non-zero surfaces its stderr tail and leaves no temp directory; a fake that
-   hangs is killed at the timeout with the §6.3 message.
-5. A two-song fixture pack where one exported folder fails the **unchanged** import path (e.g. a
-   malformed `notes.mid`) imports the good song, prints that song's existing error line, prints
-   `import summary: imported 1 of 2 songs from …`, and exits 1 (§6.6).
-6. The full suite skips (not fails) when Onyx is absent; the detector/locator/argv tests run
+1. With the pinned Onyx (`.tools/` or `--onyx`), `import media/rb-ingest --out /tmp/opencode/onyx-e2e`
+   imports **2 of 2** songs into `take-on-me/` and `buffalo-soldier/`, each with
+   `instrumental.opus`, `vocals.opus`, `lyrics.json` and −16 LUFS instrumental (±1 LU, measured as in
+   `ImporterEndToEndTests`); `import "<one file>"` does the same for one song.
+2. Without Onyx, the §6.1 text is printed (unit test asserts the install URL, the four mechanisms,
+   the FUSE/lib notes, and the PS3 caveat), exit 1, and nothing is written to `--out`.
+3. An explicit `--onyx` that does not resolve fails with the missing message rather than falling back
+   to env/PATH; `KARAOKAY_ONYX_PATH` and `.tools` each resolve a non-`PATH` install.
+4. Fake-Onyx tests pin both argv shapes (including `--to` in both steps and no extension on the
+   build output), the YAML target injection, nonzero-exit stderr surfacing, timeout kill,
+   `ProducedNothing`, and work-directory cleanup on failure.
+5. `.opus` stems are selected, and a duplicate `song.ogg`/`song.opus` pair is mixed once.
+6. The full suite skips (not fails) when Onyx is absent; locator, argv, YAML, and detector tests run
    everywhere.
+7. **Pack behaviour remains unverified** (both spike inputs were single-song CONs); an unexpected
+   multi-song build layout fails that input with `ProducedNothing`/`LayoutDrift` rather than
+   guessing, and the iteration code is covered by the continue-on-failure song tests.
 
 ### Increment 3 — Documentation and polish (implementation-time)
 
@@ -994,10 +1137,12 @@ known, contained risk.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| **Onyx CLI is explicitly undocumented and subject to change** | A new release breaks the invocation | Single wrapper (`OnyxDlcExtractor.BuildArguments`) + a unit-level test pinning the argv recipe + the §5.2 spike; a broken release is a one-file fix. `--version` is logged, never enforced. |
+| **Onyx CLI is explicitly undocumented and subject to change** | A new release breaks the two-step invocation or the YAML target keys | Single wrapper (`OnyxDlcExtractor`) + unit-level tests pinning both argv shapes and the injected YAML + the §5.2 spike; a broken release is a one-file fix. Validation is exists+executable; no `--version` probe (unsupported). |
 | **PS3 RAP prerequisite** | `.pkg`/`.mid.edat` fails for users who lack licences, with an opaque Onyx error | Detect PS3 input, append the RAP path hint (§6.1/6.5); check for `onyx-resources/raps/` to sharpen the message; state it in the usage text and spec. Never attempt to obtain RAP files. |
-| **Multi-song pack folder naming comes from Onyx templates** | Folder names change between releases; ids/paths shift | Import ids never derive from Onyx folder names — they derive from the extracted `song.ini` via `ResolveSongId`. Discovery is "any subdirectory containing `song.ini`", not a fixed template. |
-| **Audio may be Opus instead of Vorbis** | Today's importer only sees `.ogg`/`.oga` → "no instrumental stems" | Accept `.opus` (§4.7) with duplicate-stem dedupe; do not depend on Onyx preference state. |
+| **Multi-song pack layout is unverified** | A pack import may produce a different `build` layout or folder nesting | Discovery is “any subdirectory containing `song.ini`”; an unexpected layout fails that input with `ProducedNothing`/`LayoutDrift` (§6.8) instead of guessing. A follow-up pack spike is required before promising pack support. |
+| **Audio may be Opus instead of Vorbis** | A future Onyx default, or a user's own Opus folder, would hit “no instrumental stems” | `.opus` is accepted (§4.7) with duplicate-basename dedupe; the Onyx path itself pins `audio-format: ogg`, so Vorbis is what we currently receive. |
+| **PIRS is not in Onyx's recogniser** | A PIRS-signed STFS input is detected by us but rejected cleanly by Onyx | Documented in §4.1; the failure surfaces Onyx's `Couldn't find a song` through §6.2 rather than being silently skipped. |
+| **Linux runtime libs (FUSE/pango/Xft)** | The AppImage cannot start on a minimal host | Documented prerequisites and the extracted-tree fallback in §4.2/§6.1; this repository's `.tools/` tree is fixed up and found by the locator's last precedence level. |
 | **Decryption + transcode runtime for large packs** | A 20-song pack can run for many minutes; users think it hung | 15-minute default timeout, progress line before invoking (`extracting with Onyx…`), per-song summary as each finishes, `KARAOKAY_ONYX_TIMEOUT` escape hatch. |
 | **Onyx missing on most machines** | Feature appears broken to new users | It is optional and only reached for encrypted input; the error names the install URL, the three resolution mechanisms, and the platform artifact names; plain-folder imports never mention Onyx. |
 | **Wrong blob detected as a container** (false positive) | Onyx spawned on an unrelated file, confusing error | Magic-only detection with a 4-byte minimum; `.ogg` explicitly excluded from MOGG detection; plain-folder precedence; unknown → no Onyx spawn. |
