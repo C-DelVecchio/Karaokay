@@ -16,7 +16,7 @@ This is a guided tour of **what Karaokay is, what exists today, how the pieces f
 - **Next up:** Slice 6a (Azure free-tier deployment and CI/CD); Slice 6b (self-hosted Proxmox LXC
   deployment plus the dev-mode LAN phone flow: `dev:lan` + the `changeOrigin: false` proxy fix) is
   fully specced in [`docs/self-hosting.md`](self-hosting.md) and pending implementation.
-- **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.3
+- **Master blueprint:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) v1.4
 - **Slice 1 beginner guide:** [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md)
 - **Slice 2 learning snapshot:**
   [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md)
@@ -58,7 +58,7 @@ A **vertical slice** is a small, complete feature that cuts through every layer 
 
 | Slice | Theme | Status |
 |---:|---|---|
-| 1 | MIDI → `lyrics.json`, synthetic demos, importer CLI, room codes | ✅ Complete |
+| 1 | MIDI → `lyrics.json`, synthetic demos, importer CLI (incl. encrypted-DLC pre-stage), room codes | ✅ Complete |
 | 2 | HTTP media endpoints + browser stage with Web Audio and Canvas | ✅ Complete |
 | 3 | SignalR rooms, queue, EF Core database, phone remote | ✅ Complete (SHIP-WITH-NITS; M1 fixed) |
 | 4 | Playback authority, clock sync, browser video mode | ✅ Complete |
@@ -81,7 +81,7 @@ before the public demo. The Slice 4 review's hardening majors and its completion
 
 ### The blueprint and ADRs
 
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (v1.3) is the master blueprint: goals, contracts, state machines, rendering math, and the full roadmap. If this page and the blueprint disagree, the blueprint wins and one of them should be fixed.
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (v1.4) is the master blueprint: goals, contracts, state machines, rendering math, and the full roadmap. If this page and the blueprint disagree, the blueprint wins and one of them should be fixed.
 
 An **ADR** (Architecture Decision Record) is a short numbered note capturing one important decision: context, options, choice, consequences. ADRs are never rewritten; a later one may supersede an earlier one.
 
@@ -95,7 +95,7 @@ Slice 1 answered: *where do songs come from before there is a database or a user
 
 - **MIDI parser** (`MidiLyricsParser`) converts a Rock Band-style vocal chart into a `lyrics.json` timeline. A **MIDI file** is not audio; it is a list of events (note on/off, tempo, text). The parser turns those events into millisecond timings.
 - **Synthetic generator** (`Karaokay.SyntheticGen`) composes three deterministic demo songs from a seed: MIDI, instrumental and vocal stems, and `lyrics.json`.
-- **Importer CLI** (`Karaokay.Importer`) with `scan`, `import`, and `verify`, accepting extracted Rock Band folders (`song.ini`, `notes.mid`, `*.ogg` stems).
+- **Importer CLI** (`Karaokay.Importer`) with `scan`, `import`, and `verify`, accepting extracted Rock Band folders (`song.ini`, `notes.mid`, `*.ogg` stems) — later extended to accept encrypted store DLC by detecting containers by content and extracting them through Onyx ([ADR-010](adr/010-onyx-subprocess-dlc-extraction.md)).
 - **Room-code generator** (`RoomCodeGenerator`): four letters from a 23-letter alphabet, so **23⁴ = 279,841** codes. `I`, `O`, and `Q` are omitted because they are easy to misread.
 - **45 .NET tests** at the end of the slice: 29 unit, 5 integration, 11 architecture.
 
@@ -145,8 +145,8 @@ Slice 3 answered: *how does a party join one room and change a shared queue in r
 - **Tests.** The .NET suite had **84 tests** at the reviewed commit: 11 architecture, 38 unit, and
   35 integration (29 passed + 6 Testcontainers tests skipped without Docker), for 78 passed / 6
   skipped. The M1 fix added 8 unit and 3 integration tests. After the early Slice 5 work, the
-  follow-up hardening, Slice 4, the post-review backend fixes, and the restart-guard fix, the current
-  tree has **197 unit + 11 architecture + 31 integration passing** (239 passed of 267 total), with
+  follow-up hardening, Slice 4, the post-review backend fixes, and the restart-guard fix, the tree at
+  that point had **197 unit + 11 architecture + 31 integration passing** (239 passed of 267 total), with
   **28 Docker-gated integration tests skipped locally**; Vitest is at **133 tests in 16 files**. The
   Playwright lane
   is not counted here: it depends on the parallel web-client clock-sync alignment fix and is not
@@ -299,7 +299,7 @@ Slice 4 answered: *who is allowed to move playback, and how does every screen co
 - **Testability.** `QueueService` takes an injectable `TimeProvider` so tests can drive anchors;
   `PlaybackAuthority` has the same internal seam plus a tick-interval override. `QueueOrdering` also
   protects the count-in cursor item from moves.
-- **Tests.** The final tree has **197 unit + 11 architecture + 31 integration passing** (239 passed
+- **Tests.** At Slice 4 completion the tree had **197 unit + 11 architecture + 31 integration passing** (239 passed
   of 267), with **28 Docker-gated integration tests skipped locally** (CI runs them). The Slice 4
   coverage includes the five Docker-gated integration tests (two-phase Start broadcast and tick
   contract, ±30 ms pause/resume, the watchdog, duplicate-end, cold-restart rehydration) plus new
@@ -416,7 +416,7 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 ### 3.8 `docs/` — the written memory of the project
 
 - **`ARCHITECTURE.md`** — the master blueprint: constraints, system diagram, folder layout, the `lyrics.json` contract, EF Core entities, SignalR contracts, the room state machine, sweep-fill math, the Android audio plan, and all nine slices (including the 6a/6b split) with Definition-of-Done prompts.
-- **`adr/`** — nine Architecture Decision Records:
+- **`adr/`** — ten Architecture Decision Records:
 
 | ADR | Decision in one line |
 |---|---|
@@ -429,6 +429,7 @@ This project was partly built with an AI coding assistant, **OpenCode**. This fi
 | [007](adr/007-slice-4-5-deliverable-ordering.md) | Slice 5 YouTube ingestion landed early in a commit labeled Slice 4; the original Slice 4 scope stays open. |
 | [008](adr/008-slice-4-playback-authority-decisions.md) | Slice 4 completion: bounded command-channel authority, fixed 500 ms count-in beat, persisted queue sequence, injectable clock, and blueprint filename reconciliation. |
 | [009](adr/009-self-hosted-lxc-behind-reverse-proxy.md) | Self-hosted production runs as bare-metal systemd services in an unprivileged Proxmox LXC behind the operator's NPM, with one same-origin upstream and forwarded headers. |
+| [010](adr/010-onyx-subprocess-dlc-extraction.md) | Decrypt Rock Band DLC by invoking the GPL Onyx toolkit as an external subprocess (never bundled), keeping decryption code/keys out of the importer. |
 
 - **`learning/slice-1-walkthrough.md`** — a long beginner guide to Slice 1: MIDI, tick math, lyric encoding, FFmpeg mixing, LUFS, and the tests.
 - **`learning/slice-2-walkthrough.md`** — the preserved "Project State After Slice 2" snapshot (commit `ebc3e95`), kept as a learning walkthrough with links fixed for its new home.
@@ -458,7 +459,7 @@ src/
 │   ├── Karaokay.Application/    ← use cases (room codes)
 │   └── Karaokay.Infrastructure/ ← adapters (MIDI, FFmpeg, EF Core, file names)
 ├── tools/
-│   ├── Karaokay.Importer/       ← CLI for real song folders
+│   ├── Karaokay.Importer/       ← CLI for real song folders + encrypted DLC (via Onyx)
 │   └── Karaokay.SyntheticGen/   ← deterministic demo generator
 ├── clients/web/                 ← React 19 + TypeScript stage and phone remote
 └── tests/
@@ -652,6 +653,7 @@ queue sequence from it at startup.
 - **`MidiLyricsParser.cs`** — finds `PART VOCALS`/`HARM1–3`, walks events once, follows the tempo map, groups phrases (explicit marker notes 105/106 first, 1,500 ms gap fallback second), splits lines, derives countdown gaps, and applies the global offset.
 - **`MidiFileNameDiscovery.cs`** — checks `notes.mid`, `notes.midi`, `song.mid`, `song.midi`, `chart.mid` case-insensitively, which matters on Linux.
 - **`SongIniReader.cs`** — forgiving metadata reader for `name`, `artist`, `delay`, `charter`, `song_id`: case-insensitive keys, comments, optional `[song]` header, unparseable values fall back to zero.
+- **`SongFolderProbe.cs`** — the shared stem/importability rule used by the importer, `scan`, and `StemMixer`: accepts `.ogg`/`.oga`/`.opus`, groups instrumental/vocal/crowd stems, prefers Vorbis when a basename exists in both formats, and defines "importable" as `song.ini` + a chart MIDI + at least one instrumental stem.
 - **`StemMixer.cs`** — shells out to **FFmpeg** via `CliWrap`: selects instrumental stems (everything except `crowd*` and `vocals*`), mixes with `amix`, and normalizes to **−16 LUFS**. It selects `vocals*` stems or writes one second of silence when no guide vocal exists.
 
 **LUFS** (Loudness Units relative to Full Scale) estimates *perceived* loudness, not peaks, using ITU-R BS.1770 / EBU R128. Targeting −16 LUFS makes a synthetic demo and a real recording feel equally loud beside a YouTube video. The mixer uses two-pass `loudnorm`: measure first, then apply one constant gain, which avoids the pumping of single-pass adaptive normalization.
@@ -660,15 +662,62 @@ queue sequence from it at startup.
 
 #### `Karaokay.Importer`
 
-A CLI (command-line interface) with three commands:
+A CLI (command-line interface) that turns one extracted song folder — or an encrypted Rock Band DLC
+container — into the canonical three-file layout (`instrumental.opus`, `vocals.opus`,
+`lyrics.json`):
 
 ```bash
 dotnet run --project src/tools/Karaokay.Importer -- scan /path/to/library
 dotnet run --project src/tools/Karaokay.Importer -- import /path/to/song --out /path/to/library
+dotnet run --project src/tools/Karaokay.Importer -- import "/path/to/dlc/a-ha - Take on Me" --out /path/to/library
+dotnet run --project src/tools/Karaokay.Importer -- import /path/to/rb-ingest --out /path/to/library --onyx /path/to/onyx
 dotnet run --project src/tools/Karaokay.Importer -- verify /path/to/library/song-id
 ```
 
-`scan` lists candidate folders. `import` parses the MIDI, reads `song.ini`, bakes stems, probes the encoded duration, writes `lyrics.json`, and prints sizes plus measured LUFS. `verify` checks the three files exist, that `lyrics.json` deserializes and validates, and that re-serializing reproduces the bytes exactly. Exit codes: **0** success, **1** failure, **2** usage error.
+`scan` lists candidate folders and classifies encrypted containers it cannot import directly: a root
+holding two DLC files prints `. | requires Onyx — 2 encrypted containers (STFS CON x2)` instead of
+`no songs found`. A folder is advertised only when it has `song.ini`, a chart MIDI, and at least one
+instrumental stem; vocals-only folders are no longer listed.
+
+`import` has two paths:
+
+- **Plain folder** — parses the MIDI, reads `song.ini`, bakes stems with FFmpeg, probes the encoded
+  duration, writes `lyrics.json`, and prints sizes plus measured LUFS. This path is unchanged from
+  Slice 1 and never looks for Onyx; a directory that contains `song.ini` always takes it.
+- **Encrypted DLC** — when the input has no `song.ini`, or is a single file, `DlcContainerDetector`
+  sniffs the content (STFS `CON `/`LIVE`/`PIRS`, PS3 `.pkg`/`.edat`, bare MOGG, unpacked ARK
+  markers; extensionless filenames and `:Zone.Identifier`-style sidecars are handled). When
+  containers are found, `OnyxLocator` resolves Onyx in this order: `--onyx <path>`,
+  `KARAOKAY_ONYX_PATH`, `PATH`, then the repository-local
+  `.tools/squashfs-root/usr/bin/onyx` / `.tools/onyx.AppImage`. `OnyxDlcExtractor` then runs Onyx
+  twice per container — `onyx import <file> --to <temp project>`, injects a `ps` target into
+  `song.yml` (`game: ps`, `audio-format: ogg`), and runs
+  `onyx build <project>/song.yml --target ps --to <temp out>` — after which every produced Phase
+  Shift folder goes through the same import pipeline. Each container/song is reported separately;
+  one failure does not abort the rest. After the per-song imports it prints
+  `import summary: imported N of M songs from '<input>'` (before any final aggregate error, and only
+  when at least one folder was produced), and exits 1 if anything failed.
+  `KARAOKAY_ONYX_TIMEOUT` (a `TimeSpan` such as `00:30:00`) overrides the 15-minute per-input budget
+  covering both Onyx steps.
+
+  If Onyx is missing, the command fails with an actionable message naming the detected containers,
+  the paths it searched, the install URL, the Linux notes (the AppImage needs `libfuse2`; without
+  FUSE, extract it and run `squashfs-root/usr/bin/onyx`, copying `libpangoxft-1.0.so.0`/`libXft.so.2`
+  into `squashfs-root/usr/lib` if needed), and the RAP-file caveat for PS3 `.pkg` input (Xbox
+  `CON`/`LIVE` needs none). The tested release is **Onyx 20261111**; its CLI is undocumented and may
+  drift, which is why the invocation lives in one class.
+
+`verify` checks the three files exist, that `lyrics.json` deserializes and validates, and that
+re-serializing reproduces the bytes exactly. Exit codes: **0** success, **1** failure, **2** usage
+error.
+
+Onyx is never bundled: it is a GPL program invoked as a separate process, so the importer stays
+outside its licence; no decryption code, keys, or Onyx-derived container logic live here (the
+detector only identifies container magic bytes). See
+[ADR-010](adr/010-onyx-subprocess-dlc-extraction.md) and
+[`docs/specs/rb-dlc-onyx-prestage.md`](specs/rb-dlc-onyx-prestage.md). Importing writes files only;
+see [§6.2.1](#621-importing-your-own-songs-and-why-they-may-not-appear) for how to make them show up
+in the running app.
 
 #### `Karaokay.SyntheticGen`
 
@@ -816,8 +865,8 @@ The three songs are a test harness, not a library: one has explicit phrase marke
 
 ### 4.5 `src/tests/` — the safety net
 
-- **`Karaokay.UnitTests` (197 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, the count-in interactions, `AwaitingDownload` auto-start, cold-restart count-in resume, and the command-channel write timeout; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, the countdown reset on removal, and Start/Pause/Resume/Skip/Idle transitions.
-- **`Karaokay.IntegrationTests` (31 passing; 28 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, stage-role rejection, and five Slice 4 tests (two-phase Start broadcast and tick contract, ±30 ms pause/resume, watchdog, duplicate-end, cold-restart rehydration). The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing.
+- **`Karaokay.UnitTests` (206 tests).** A **unit test** checks one small piece in isolation: a pure function, parser, or validator. The project uses **xUnit**, where `[Fact]` is one test and `[Theory]` runs one test with several data rows. Coverage includes tempo math, talky/connector handling, phrase grouping by markers versus gaps, countdown math, golden `lyrics.json` byte comparisons, room codes, generator determinism, SignalR method-name parity, the Slice 3 queue-service rules, the early Slice 5 video-id, yt-dlp parsing, coordinator, and worker paths, and the Slice 4 authority. `PlaybackAuthorityTests` drives an injected clock through the two-phase Start/tick contract, pause/resume position preservation (the ±30 ms bound itself is asserted by the Docker-gated integration suite), watchdog, duplicate-end protection, the count-in interactions, `AwaitingDownload` auto-start, cold-restart count-in resume, and the command-channel write timeout; `RoomStateMapperTests` and `RoomRehydrationQueryTests` cover cold-start mapping and the query shape via `RoomTestHarness`. `YouTubeIngestionServiceTests` covers channel and per-room admission caps, the coalescing bypass, queue-full cleanup of coalesced targets, and session-token resolution against an in-memory harness with no database. `QueueServiceTests` runs the real service against in-memory rooms with a hub recorder and no database: reorder clamping/rejection, advance ordering, the countdown reset on removal, and Start/Pause/Resume/Skip/Idle transitions.
+- **`Karaokay.IntegrationTests` (95 passing; 29 Docker-gated tests skip locally).** An **integration test** checks several real components working together, usually including I/O. The media-endpoint tests boot the real API through `WebApplicationFactory`; they assert range responses (`206` with `Content-Range`/`Accept-Ranges`), ETag presence and strength, content types, 404 `ProblemDetails`, path-traversal 404s, invalid-folder skipping, and the library listing. The room-hub tests also boot the real host, but against a **Testcontainers PostgreSQL** container: room-code uniqueness, snapshot join/rejoin, monotonic deltas, reorder/advance regressions, the playback lifecycle, stage-role rejection, and five Slice 4 tests (two-phase Start broadcast and tick contract, ±30 ms pause/resume, watchdog, duplicate-end, cold-restart rehydration). The early Slice 5 suite adds deterministic `FakeYouTubeService` coverage for search, dedup, SignalR progress/`SongReady`, and video range serving, plus session-token binding, the anonymous malformed-token fallback, and a per-IP enqueue rate-limit `429` with `Retry-After` (the fixture assigns a simulated remote IP). `PostgresApiFixture` records a skip reason when Docker is unavailable, so laptops stay green while CI runs the real persistence path. The importer integration tests do not boot the API: they run against a temporary fake Rock Band folder with real FFmpeg-generated audio, assert stem selection and the filter graph, and check LUFS within ±1 LU. `FfmpegGuard` skips FFmpeg-dependent tests with a clear message when the tools are missing. The Onyx pre-stage adds fake-Onyx detector/locator/extractor tests that run everywhere, plus a skip-guarded real-file round trip (needs Onyx and the gitignored `media/rb-ingest` files).
 - **`Karaokay.ArchitectureTests` (11 tests).** These enforce layering. **Reflection** is .NET's ability to inspect assemblies and types at runtime. The tests use `Assembly.GetReferencedAssemblies()` to assert, for example, that `Contracts` never references Domain/Application/Infrastructure/DryWetMidi/CliWrap/EF Core, that `Application` never references `Infrastructure`, that CLI tools never reference the apps, and that `Domain` is a leaf. **Positive controls** assert the probe really sees a known reference, so a broken helper cannot make every rule pass vacuously. The source comment explains why reflection replaced `NetArchTest.Rules`, which misreported dependencies on .NET 10.
 
 ---
@@ -922,12 +971,12 @@ From the repository root:
 
 ```bash
 dotnet build          # restore + compile all twelve projects; warnings are errors
-dotnet test           # run unit, integration, and architecture tests (249 passing; 29 Docker-gated skips locally; 278 with Docker)
+dotnet test           # 312 passing as of v1.4 (2026-11-27): 206 unit + 11 architecture + 95 integration; 29 Docker-gated skips locally, 341 with Docker
 dotnet run --project src/apps/Karaokay.Api     # Development profile: http://localhost:5255
 dotnet run --project src/apps/Karaokay.AppHost # optional: API + PostgreSQL via Aspire
 ```
 
-`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. The current tree is **249 passed / 29 skipped** on a Docker-less machine (206 unit, 11 architecture, 32 integration); with Docker available the full suite is **278 passed / 0 skipped**, and CI runs the Docker-gated tests against a real container.
+`dotnet build` reads `karaokay.sln`, restores NuGet packages, and compiles everything. Because warnings are errors, a green build is a strong signal. `dotnet test` builds if needed, then runs xUnit; FFmpeg-dependent integration tests are skipped by a guard if the tools are missing, and the Testcontainers PostgreSQL suite skips with an actionable message when Docker is unavailable. As of v1.4 (2026-11-27) the tree is **312 passed / 29 skipped** on a Docker-less machine (206 unit, 11 architecture, 95 integration); with Docker available the full suite is **341 passed / 0 skipped**, and CI runs the Docker-gated tests against a real container.
 
 The `AppHost` profile starts PostgreSQL with a persisted data volume and passes a `Karaokay`
 connection string to the API, which applies migrations and syncs the demo songs. Without a
@@ -945,6 +994,32 @@ curl -H "Range: bytes=0-1023" \
 ```
 
 The `-I` call shows the ETag and cache headers; the ranged call should return `206 Partial Content` with exactly 1,024 bytes.
+
+### 6.2.1 Importing your own songs (and why they may not appear)
+
+`import --out <library>` writes files and nothing else: it does not notify, seed, or copy anything
+into a running app. The API serves whatever its `MediaRoot` resolves to.
+
+- The **Development** profile sets `MediaRoot` to `../../clients/web/public/demo-tracks` in
+  `appsettings.Development.json` — **not** `media/library`. Freshly imported songs are therefore
+  missing from `/api/songs` until the server is pointed somewhere else.
+- To serve your imports, stop the API/AppHost and restart it with `MediaRoot` set to an **absolute**
+  path to the library you imported into. Relative values resolve against the API content root, not
+  your shell's working directory:
+
+  ```bash
+  MediaRoot=/absolute/path/to/library dotnet run --project src/apps/Karaokay.Api
+  ```
+
+- With a database (the AppHost supplies a `Karaokay` connection string) the song table is queried and
+  seeded only at startup, so **each new import needs an API restart** before it appears.
+- A bare `dotnet run --project src/apps/Karaokay.Api` **without** a database uses the filesystem
+  fallback, which rescans `MediaRoot` with a one-second cache — new song folders appear without a
+  restart once the stage or remote reloads the library.
+- **Never import real or copyrighted songs into `src/clients/web/public/demo-tracks`.** That folder
+  is git-tracked, so a committed file would violate C2; the 100 KiB media guard **exempts**
+  `demo-tracks/`, so CI would not catch it — the protection there is convention and review. Keep
+  real libraries under the gitignored `media/` tree (or outside the repository).
 
 ### 6.3 Web commands
 
@@ -975,7 +1050,7 @@ dotnet run --project src/tools/Karaokay.SyntheticGen -- --seed 42 --out demo-tra
 
 This writes three song folders with four files each and prints every file's size and SHA-256. Run it twice to check determinism: the pure-.NET artifacts (`song.mid`, `lyrics.json`) are identical, and under the same FFmpeg/libopus build the Opus bytes are too. Different FFmpeg versions may legitimately produce different lossy bytes; tests compare only what is portable.
 
-To refresh the web copies, generate into a temp directory and copy the three folders into `src/clients/web/public/demo-tracks/`. Never commit copyrighted audio; CI's 100 KiB guard enforces it.
+To refresh the web copies, generate into a temp directory and copy the three folders into `src/clients/web/public/demo-tracks/`. Never commit copyrighted audio there: the folder is git-tracked, and the 100 KiB media guard explicitly exempts `demo-tracks/`, so review is the protection (the guard only fails large media outside it).
 
 ### 6.5 What CI runs
 
@@ -1245,7 +1320,7 @@ next". The phone UI disables the buttons for the same reason; the regression is 
 
 ## 10. Further reading
 
-- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the blueprint, v1.3. Start with §7 for the roadmap or §4.1 for the `lyrics.json` contract.
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the blueprint, v1.4. Start with §7 for the roadmap or §4.1 for the `lyrics.json` contract.
 - [`docs/learning/slice-1-walkthrough.md`](learning/slice-1-walkthrough.md) — the deep beginner guide to MIDI, tempo maps, phrase markers, FFmpeg, LUFS, and the tests.
 - [`docs/learning/slice-2-walkthrough.md`](learning/slice-2-walkthrough.md) — the preserved post-Slice-2 project tour, now a learning snapshot with relocated links.
 - [`docs/learning/slice-3-walkthrough.md`](learning/slice-3-walkthrough.md) — the deep Slice 3 guide: rooms, the queue engine, EF Core, the M1 story, and the phone remote.

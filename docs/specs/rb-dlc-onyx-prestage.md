@@ -1,6 +1,7 @@
 # Spec: Rock Band DLC pre-stage via Onyx (encrypted container → Phase Shift folder → existing importer)
 
-- **Status:** Draft for review (no code changes yet)
+- **Status:** Implemented — Increments 1–3 shipped and merged (2026-11-27) against Onyx 20261111.
+  §3.1 is a historical snapshot of the pre-implementation state, kept for context.
 - **Date:** 2026-11-27
 - **Owner:** Architect
 - **Decision record:** [ADR-010](../adr/010-onyx-subprocess-dlc-extraction.md) — decryption runs as an
@@ -9,10 +10,10 @@
   optionally `src/core/Karaokay.Infrastructure/MediaIngest` (stem enumeration), and
   `src/tests/Karaokay.IntegrationTests` — the only test project that can see importer internals
   (see §7).
-- **Documentation updated at implementation time (not by this spec):**
-  `docs/ARCHITECTURE.md` (§3 importer row, §7 importer slice), `docs/PROJECT_STATE.md` (§2 slice
-  table, §3.8 ADR table, §4.3 importer usage + exit-code text), and the ADR index lines in
-  `ARCHITECTURE.md`'s header and `PROJECT_STATE.md` §3.8.
+- **Documentation updated in Increment 3:**
+  `docs/ARCHITECTURE.md` (§3 importer row, §7 importer slice, companion-ADR list),
+  `docs/PROJECT_STATE.md` (§2 slice table, §2.1 importer bullet, §3.8 ADR table, §4.2/§4.3 importer
+  text, §6.2/§6.2.1 dev workflow), and the ADR-010 status line.
 
 ---
 
@@ -1158,9 +1159,9 @@ known, contained risk.
    completion (a 25 MB file still growing), and hosting it as a service/`import --watch` loop.
    Deferred: it needs the detector and extractor built here, and it raises lifecycle questions
    (partial files, retries, logging, cancellation) that deserve their own spec.
-2. **`verify` command doc mismatch.** `ARCHITECTURE.md` §3 lists `verify <songId>` while
-   `ImporterCli` implements `verify <dir>`. Fix the blueprint at implementation time (Increment 3)
-   rather than silently changing the command; ADR-005's governance rule applies.
+2. **`verify` command doc mismatch — resolved in Increment 3.** The blueprint's importer row
+   previously named a song-id argument while `ImporterCli` has always taken a directory; the row now
+   matches the CLI (`verify <dir>`). ADR-005's governance rule was followed.
 3. **Media-library/API awareness of encrypted input.** `Karaokay.Api`'s `MediaLibrary` scans
    immediate subdirectories of `MediaRoot` for `instrumental.opus` + `lyrics.json`. An `rb-ingest`
    directory placed *inside* the media root is therefore invisible today. Either document "keep

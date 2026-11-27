@@ -68,9 +68,14 @@ internal static class ImporterCli
                                                    encrypted containers (requires Onyx).
               import <dir|file> [--out <outRoot>] [--onyx <path>]
                                                    Bake stems and write lyrics.json. Encrypted Rock
-                                                   Band DLC is extracted with Onyx first. --onyx is
-                                                   the Onyx executable (else KARAOKAY_ONYX_PATH,
-                                                   PATH, or the repository .tools/ convention).
+                                                   Band DLC is extracted with Onyx first (tested
+                                                   release 20261111; its CLI is undocumented and may
+                                                   drift). --onyx is the Onyx executable (else
+                                                   KARAOKAY_ONYX_PATH, PATH, or the repository
+                                                   .tools/ convention).
+                                                   PS3 DLC also needs RAP files at
+                                                   onyx-resources/raps/<CONTENTID>.RAP; Xbox
+                                                   CON/LIVE needs none.
                                                    Default out root: <dir>/karaokay-out.
               verify <dir>                         Validate a baked song folder (3 files).
 

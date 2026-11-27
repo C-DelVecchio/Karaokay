@@ -1,6 +1,6 @@
 # Karaokay — Architectural Blueprint & Phased Implementation Plan
 
-> **Status:** Accepted · **Version:** 1.3 · **Date:** 2026-11-26
+> **Status:** Accepted · **Version:** 1.4 · **Date:** 2026-11-27
 >
 > Karaokay is a self-hosted, multi-client, real-time party karaoke platform inspired by classic
 > karaoke machines, Rock Band, and Jackbox Games. It is engineered as a GitHub portfolio showcase
@@ -17,7 +17,9 @@
 > project renamed to **Karaokay**. 1.2 — Slice 1 reconciliation: room-code alphabet corrected to
 > 23 letters / 279,841 codes (ADR-005); line-wrapping ownership moved to the renderer (ADR-006).
 > 1.3 — Slice 6 split into 6a (Azure zero-cost demo) and 6b (self-hosted Proxmox LXC, systemd,
-> Nginx Proxy Manager), with the self-host deployment topology recorded in ADR-009.
+> Nginx Proxy Manager), with the self-host deployment topology recorded in ADR-009. 1.4 — Rock Band
+> DLC pre-stage: content-based container detection and optional Onyx extraction/import documented
+> (ADR-010, [`docs/specs/rb-dlc-onyx-prestage.md`](specs/rb-dlc-onyx-prestage.md)).
 >
 > Companion decision records: [ADR-001](adr/001-single-replica-signalr-azure.md) ·
 > [ADR-002](adr/002-android-oboe-hdmi-usb-drift.md) ·
@@ -27,7 +29,8 @@
 > [ADR-006](adr/006-line-wrapping-ownership.md) ·
 > [ADR-007](adr/007-slice-4-5-deliverable-ordering.md) ·
 > [ADR-008](adr/008-slice-4-playback-authority-decisions.md) ·
-> [ADR-009](adr/009-self-hosted-lxc-behind-reverse-proxy.md)
+> [ADR-009](adr/009-self-hosted-lxc-behind-reverse-proxy.md) ·
+> [ADR-010](adr/010-onyx-subprocess-dlc-extraction.md)
 
 ## Table of Contents
 
@@ -63,7 +66,7 @@ A real-time party karaoke platform:
 | # | Constraint | Enforcement |
 |---|---|---|
 | C1 | **$0/month, permanently.** Every tool, library, CI runner, and cloud hosting target must operate at $0/month. No expiring 12-month free trials, no paid API keys, no paid Redis backplanes. | Azure SWA Free, ACA Consumption (`minReplicas: 0`), Azure SQL Free tier, GitHub free runners, zero-key `yt-dlp` search; self-host runs on the operator's own Proxmox hardware with free DuckDNS + Let's Encrypt. Cost/SKU tables in `docs/self-hosting.md` (self-host + Azure cross-check). |
-| C2 | **Zero copyrighted assets in Git.** Never commit commercial Rock Band charts, audio stems, or downloaded YouTube videos. | Standalone `Karaokay.Importer` CLI processes users' own extracted folders locally; deterministic `Karaokay.SyntheticGen` tool generates 2–3 public-domain multitrack demo songs committed to the repo so CI and recruiters run the full stack out of the box. |
+| C2 | **Zero copyrighted assets in Git.** Never commit commercial Rock Band charts, audio stems, or downloaded YouTube videos. | Standalone `Karaokay.Importer` CLI processes users' own extracted folders locally — and, for encrypted store DLC, detects containers by content and optionally runs the GPL **Onyx** toolkit as an external process (never bundled; ADR-010); deterministic `Karaokay.SyntheticGen` tool generates 2–3 public-domain multitrack demo songs committed to the repo so CI and recruiters run the full stack out of the box. |
 | C3 | **Two deployment modes from one codebase.** *Self-hosted* (unprivileged Proxmox Debian LXC, bare-metal systemd + Kestrel serving the built SPA, PostgreSQL, full `yt-dlp` ingestion, Nginx Proxy Manager TLS; Aspire is dev-time orchestration and the Docker Compose image specced for Slice 5 (not yet implemented) is the secondary path) and *Public portfolio demo* (Azure free tiers, Azure SQL, ingestion disabled via feature flag, demo songs bundled as static frontend assets). | `Features:EnableYouTubeIngestion` flag + provider-agnostic persistence (Npgsql / Microsoft.EntityFrameworkCore.SqlServer). |
 | C4 | **Type safety across the wire.** OpenAPI → `openapi-typescript` generated clients; SignalR method-name parity enforced by unit tests reflecting C# interfaces against TS protocol constants. | CI contract tests (`SignalRContractTests`). |
 
@@ -147,13 +150,15 @@ karaokay/
 │   │   ├── Karaokay.Application/       # queue engine, playback authority, room state machine
 │   │   ├── Karaokay.Infrastructure/
 │   │   │   ├── Persistence/ (KaraokayDbContext, configurations, migrations)
-│   │   │   └── MediaIngest/ (MidiLyricsParser, StemMixer, MediaStore, YouTubeSearchService,
-│   │   │                    YouTubeDownloadWorker, DownloadJobChannel)
+│   │   │   └── MediaIngest/ (MidiLyricsParser, StemMixer, SongFolderProbe, MediaStore,
+│   │   │                    YouTubeSearchService, YouTubeDownloadWorker, DownloadJobChannel)
 │   │   └── Karaokay.Contracts/          # DTOs shared with clients, lyrics.json types
 │   │
 │   ├── tools/
-│   │   ├── Karaokay.Importer/          # CLI: ingest extracted Rock Band folders → library + lyrics.json
-│   │   │   └── (Commands: `scan <root>`, `import <dir>`, `verify <songId>`)
+│   │   ├── Karaokay.Importer/          # CLI: ingest extracted Rock Band folders → library + lyrics.json;
+│   │   │   │                          #      optional Onyx pre-stage decrypts encrypted DLC (ADR-010)
+│   │   │   ├── Commands/ (`scan <root>`, `import <dir|file>`, `verify <dir>`)
+│   │   │   └── Dlc/ (DlcContainerDetector, OnyxLocator, OnyxDlcExtractor)
 │   │   └── Karaokay.SyntheticGen/      # deterministic demo song generator (DryWetMidi + FFmpeg)
 │   │
 │   ├── clients/
@@ -767,6 +772,19 @@ Each slice below specifies files to create, required tests, and a copy-paste
 > stats); (4) CI workflow builds, runs all unit + golden + architecture tests on ubuntu-latest
 > with zero paid dependencies; (5) no binary media over 100 KB is committed except the generated
 > demo stems, which are public-domain synthetic."
+
+**Post-Slice-1 extension — Rock Band DLC pre-stage (ADR-010).** The importer now also accepts
+encrypted store DLC. `DlcContainerDetector` classifies *by content* (STFS `CON `/`LIVE`/`PIRS`
+magic, PS3 `.pkg`/encrypted `.edat`, bare MOGG, unpacked ARK markers); extensionless filenames are
+handled by content, and OS sidecars (`:Zone.Identifier`, `._*`, `.DS_Store`) are ignored. A directory
+that already satisfies the extracted-folder contract always takes the normal path. When containers
+are found, `OnyxLocator` resolves the user's Onyx executable (`--onyx` > `KARAOKAY_ONYX_PATH` >
+`PATH` > repository `.tools/`) and `OnyxDlcExtractor` runs Onyx's two-step CLI — `onyx import
+<container> --to <temp project>`, then an injected `ps` target (`game: ps`, `audio-format: ogg`) and
+`onyx build <project>/song.yml --target ps --to <temp out>` — after which each produced Phase Shift
+folder goes through the unchanged import pipeline. Onyx is optional and never bundled (GPL boundary), and
+`SongFolderProbe` is now the shared stem/importability rule (`.ogg`/`.oga`/`.opus`). Full design,
+messages, and tests: [`docs/specs/rb-dlc-onyx-prestage.md`](specs/rb-dlc-onyx-prestage.md).
 
 ---
 

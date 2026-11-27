@@ -1,6 +1,6 @@
 # ADR-010: Rock Band DLC decryption through the Onyx toolkit as an external subprocess
 
-- **Status:** Proposed (draft for review)
+- **Status:** Accepted / Implemented (Increments 1–2 shipped against Onyx 20261111; see [the spec](../specs/rb-dlc-onyx-prestage.md))
 - **Date:** 2026-11-27
 - **Deciders:** Architect
 - **Context level:** Media ingestion / Licensing boundary & external tooling
