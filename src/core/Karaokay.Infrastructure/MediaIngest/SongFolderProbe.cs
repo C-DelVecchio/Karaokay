@@ -9,8 +9,9 @@ public sealed record StemSet(
 /// <summary>
 /// One definition of "is this a stem" and "is this folder importable", shared by the importer,
 /// the scanner and the stem mixer so the three commands cannot drift apart (Slice 1 review
-/// items 6 and 14). Increment 1 of the Onyx pre-stage keeps the accepted extensions at
-/// <c>.ogg</c>/<c>.oga</c>; <c>.opus</c> arrives with the extractor increment.
+/// items 6 and 14). Accepted audio extensions are <c>.ogg</c>, <c>.oga</c> and <c>.opus</c>;
+/// when a folder carries the same stem in more than one container, the Vorbis copy wins so the
+/// stem is mixed once.
 /// </summary>
 public static class SongFolderProbe
 {
@@ -23,7 +24,8 @@ public static class SongFolderProbe
 
         var extension = Path.GetExtension(path);
         return string.Equals(extension, ".ogg", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(extension, ".oga", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(extension, ".oga", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".opus", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>True when the file name starts with <paramref name="prefix"/>, ignoring case.</summary>
@@ -43,8 +45,7 @@ public static class SongFolderProbe
     {
         ArgumentNullException.ThrowIfNull(audioFiles);
 
-        return audioFiles
-            .Where(IsAudioStemFile)
+        return DeduplicateByBaseName(audioFiles.Where(IsAudioStemFile))
             .Where(file => !HasStemPrefix(file, "crowd") && !HasStemPrefix(file, "vocals"))
             .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
             .ThenBy(file => file, StringComparer.Ordinal)
@@ -56,8 +57,7 @@ public static class SongFolderProbe
     {
         ArgumentNullException.ThrowIfNull(audioFiles);
 
-        return audioFiles
-            .Where(IsAudioStemFile)
+        return DeduplicateByBaseName(audioFiles.Where(IsAudioStemFile))
             .Where(file => HasStemPrefix(file, "vocals"))
             .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
             .ThenBy(file => file, StringComparer.Ordinal)
@@ -88,8 +88,7 @@ public static class SongFolderProbe
             return EmptySet();
         }
 
-        var crowd = files
-            .Where(IsAudioStemFile)
+        var crowd = DeduplicateByBaseName(files.Where(IsAudioStemFile))
             .Where(file => HasStemPrefix(file, "crowd"))
             .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
             .ThenBy(file => file, StringComparer.Ordinal)
@@ -136,7 +135,7 @@ public static class SongFolderProbe
 
         if (Discover(directory).Instrumental.Count == 0)
         {
-            reason = $"no instrumental stems (*.ogg/*.oga excluding crowd*/vocals*) found in: {directory}";
+            reason = $"no instrumental stems (*.ogg/*.oga/*.opus excluding crowd*/vocals*) found in: {directory}";
             return false;
         }
 
@@ -144,4 +143,23 @@ public static class SongFolderProbe
     }
 
     private static StemSet EmptySet() => new([], [], []);
+
+    /// <summary>
+    /// Keeps one file per stem basename when the folder has both a Vorbis and an Opus copy
+    /// (e.g. <c>song.ogg</c> + <c>song.opus</c>), preferring <c>.ogg</c>/<c>.oga</c>.
+    /// </summary>
+    private static IEnumerable<string> DeduplicateByBaseName(IEnumerable<string> stems) =>
+        stems
+            .GroupBy(Path.GetFileNameWithoutExtension, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(file => IsVorbisStem(file) ? 0 : 1)
+                .ThenBy(file => file, StringComparer.Ordinal)
+                .First());
+
+    private static bool IsVorbisStem(string file)
+    {
+        var extension = Path.GetExtension(file);
+        return string.Equals(extension, ".ogg", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".oga", StringComparison.OrdinalIgnoreCase);
+    }
 }

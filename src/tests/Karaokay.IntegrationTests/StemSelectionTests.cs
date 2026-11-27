@@ -36,7 +36,7 @@ public sealed class StemSelectionTests
             selected.Select(path => Path.GetFileName(path)!));
         Assert.DoesNotContain(selected, path => Path.GetFileName(path)!.StartsWith("crowd", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(selected, path => Path.GetFileName(path)!.StartsWith("vocals", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(selected, path => Path.GetExtension(path) is not (".ogg" or ".oga"));
+        Assert.DoesNotContain(selected, path => Path.GetExtension(path) is not (".ogg" or ".oga" or ".opus"));
     }
 
     [Fact]

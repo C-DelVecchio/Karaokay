@@ -66,8 +66,11 @@ internal static class ImporterCli
             Usage:
               scan <root>                          Recursively list importable song folders and
                                                    encrypted containers (requires Onyx).
-              import <dir|file> [--out <outRoot>]  Bake stems and write lyrics.json.
-                                                   Encrypted Rock Band DLC needs Onyx (manual step).
+              import <dir|file> [--out <outRoot>] [--onyx <path>]
+                                                   Bake stems and write lyrics.json. Encrypted Rock
+                                                   Band DLC is extracted with Onyx first. --onyx is
+                                                   the Onyx executable (else KARAOKAY_ONYX_PATH,
+                                                   PATH, or the repository .tools/ convention).
                                                    Default out root: <dir>/karaokay-out.
               verify <dir>                         Validate a baked song folder (3 files).
 

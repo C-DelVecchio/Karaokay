@@ -10,10 +10,11 @@ using Melanchall.DryWetMidi.Core;
 namespace Karaokay.Importer.Commands;
 
 /// <summary>
-/// <c>import &lt;dir|file&gt; [--out &lt;outRoot&gt;]</c> — ingests one extracted Rock Band folder into the
-/// canonical three-file layout: <c>instrumental.opus</c>, <c>vocals.opus</c> and <c>lyrics.json</c>.
-/// A single encrypted container file is accepted as input so it can be diagnosed (Increment 1 of
-/// the Onyx pre-stage; no extraction yet).
+/// <c>import &lt;dir|file&gt; [--out &lt;outRoot&gt;] [--onyx &lt;path&gt;]</c> — ingests one extracted
+/// Rock Band folder into the canonical three-file layout (<c>instrumental.opus</c>,
+/// <c>vocals.opus</c>, <c>lyrics.json</c>). An encrypted container file (or a directory holding
+/// containers) is decrypted through the Onyx pre-stage first, then each produced Phase Shift folder
+/// runs the same unchanged import path.
 /// </summary>
 internal static class ImportCommand
 {
@@ -24,38 +25,55 @@ internal static class ImportCommand
 
     public static async Task<int> ExecuteAsync(string[] args, CancellationToken cancellationToken)
     {
-        if (!TryParseArguments(args, out var directory, out var outRoot, out var error))
+        if (!TryParseArguments(args, out var input, out var outRoot, out var onyxPath, out var error))
         {
             Console.Error.WriteLine($"error: {error}");
             ImporterCli.PrintUsage();
             return ImporterCli.ExitUsage;
         }
 
-        if (!Directory.Exists(directory) && !File.Exists(directory))
+        if (!Directory.Exists(input) && !File.Exists(input))
         {
-            return Fail($"song directory not found: {directory}");
+            return Fail($"song directory not found: {input}");
         }
 
-        // Increment 1 of the Onyx pre-stage: a single container file is a supported *input* (so it
-        // can be diagnosed properly), and a directory without song.ini is classified before the
-        // existing validation. A directory that has song.ini keeps the byte-identical old path.
-        if (File.Exists(directory))
+        // Deliberate behaviour preservation: a directory WITH song.ini never classifies and never
+        // touches Onyx; it takes the existing path and existing errors byte for byte (§4.0).
+        var isFile = File.Exists(input);
+        if (!isFile && File.Exists(Path.Combine(input, "song.ini")))
         {
-            return Fail(DescribeUnusableInput(
-                directory,
-                DlcContainerDetector.ClassifyFile(directory),
-                isFile: true));
+            return await ImportDirectoryAsync(input, outRoot, cancellationToken).ConfigureAwait(false);
         }
 
+        var detection = isFile
+            ? DlcContainerDetector.ClassifyFile(input)
+            : DlcContainerDetector.ClassifyDirectory(input);
+
+        if (detection.Kind == DlcInputKind.EncryptedContainers && detection.Containers.Count > 0)
+        {
+            return await RunOnyxPreStageAsync(input, detection, outRoot, onyxPath, isFile, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (isFile || detection.Kind == DlcInputKind.Unknown)
+        {
+            return Fail(DescribeUnusableInput(input, isFile));
+        }
+
+        // Plain folder discovered between the song.ini check and classification: import it.
+        return await ImportDirectoryAsync(input, outRoot, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The unchanged per-folder import body (song.ini → MIDI → stem bake → lyrics.json). Used both by
+    /// the plain path and by the Onyx pre-stage's per-song loop.
+    /// </summary>
+    private static async Task<int> ImportDirectoryAsync(
+        string directory,
+        string? outRoot,
+        CancellationToken cancellationToken)
+    {
         var iniPath = Path.Combine(directory, "song.ini");
-        if (!File.Exists(iniPath))
-        {
-            return Fail(DescribeUnusableInput(
-                directory,
-                DlcContainerDetector.ClassifyDirectory(directory),
-                isFile: false));
-        }
-
         SongIni ini;
         try
         {
@@ -80,9 +98,7 @@ internal static class ImportCommand
             return Fail(exception.Message);
         }
 
-        var targetRoot = string.IsNullOrWhiteSpace(outRoot)
-            ? Path.Combine(directory, DefaultOutDirectoryName)
-            : outRoot;
+        var targetRoot = ResolveTargetRoot(directory, outRoot, isFile: false);
         var songId = ResolveSongId(ini, directory, targetRoot);
 
         LyricsDocument lyrics;
@@ -105,6 +121,11 @@ internal static class ImportCommand
         {
             // Malformed/truncated MIDI (headers, chunk sizes, running status…) — report it cleanly
             // instead of letting a third-party exception escape with a stack trace.
+            return Fail($"invalid MIDI file '{midiPath}': {exception.Message}");
+        }
+        catch (ArgumentException exception)
+        {
+            // DryWetMidi also surfaces some malformed inputs (e.g. an empty file) as ArgumentException.
             return Fail($"invalid MIDI file '{midiPath}': {exception.Message}");
         }
         catch (IOException exception)
@@ -135,7 +156,8 @@ internal static class ImportCommand
         var instrumentalStems = StemMixer.SelectInstrumentalStems(stems);
         if (instrumentalStems.Count == 0)
         {
-            return Fail($"no instrumental stems (*.ogg/*.oga excluding crowd*/vocals*) found in: {directory}");
+            return Fail(
+                $"no instrumental stems (*.ogg/*.oga/*.opus excluding crowd*/vocals*) found in: {directory}");
         }
 
         var vocalStems = StemMixer.SelectVocalStems(stems);
@@ -160,7 +182,7 @@ internal static class ImportCommand
             if (vocalStems.Count == 0)
             {
                 Console.Error.WriteLine(
-                    "warning: no vocals*.ogg stem found; writing a 1-second silent vocals.opus so the " +
+                    "warning: no vocals* stem found; writing a 1-second silent vocals.opus so the " +
                     "three-file layout is always produced.");
                 await StemMixer.CreateSilentOpusAsync(vocalsTempPath, cancellationToken).ConfigureAwait(false);
             }
@@ -220,6 +242,109 @@ internal static class ImportCommand
     }
 
     /// <summary>
+    /// Pre-stage for encrypted DLC: locate Onyx, extract every detected container into one temp work
+    /// directory, then import each returned song folder through the unchanged per-folder path.
+    /// </summary>
+    private static async Task<int> RunOnyxPreStageAsync(
+        string input,
+        DlcDetection detection,
+        string? outRoot,
+        string? onyxPath,
+        bool isFile,
+        CancellationToken cancellationToken)
+    {
+        if (!OnyxLocator.TryResolve(onyxPath, out var onyx, out var searchedSummary))
+        {
+            return Fail(OnyxLocator.BuildMissingOnyxMessage(input, detection.Containers, searchedSummary));
+        }
+
+        var workRoot = Path.Combine(
+            Path.GetTempPath(),
+            "karaokay-onyx-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(workRoot);
+
+        try
+        {
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"extracting {detection.Containers.Count} container(s) with Onyx " +
+                $"({onyx.Source}: {onyx.ExecutablePath})..."));
+
+            var extractor = new OnyxDlcExtractor(onyx);
+            var result = await extractor.ExtractAsync(detection.Containers, workRoot, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Per-input extraction failures are user-facing errors in their own right; the loop
+            // still imports whatever other inputs produced.
+            foreach (var failure in result.Failures)
+            {
+                Console.Error.WriteLine($"error: {failure.Diagnostic}");
+            }
+
+            if (result.SongFolders.Count == 0)
+            {
+                return ImporterCli.ExitFailure;
+            }
+
+            var targetRoot = ResolveTargetRoot(input, outRoot, isFile);
+            var imported = 0;
+            foreach (var songFolder in result.SongFolders)
+            {
+                var code = await ImportDirectoryAsync(songFolder, targetRoot, cancellationToken)
+                    .ConfigureAwait(false);
+                if (code == ImporterCli.ExitSuccess)
+                {
+                    imported++;
+                }
+            }
+
+            var total = result.SongFolders.Count;
+            Console.WriteLine(FormattableString.Invariant(
+                $"import summary: imported {imported} of {total} songs from '{input}'"));
+
+            if (imported == total && result.Failures.Count == 0)
+            {
+                return ImporterCli.ExitSuccess;
+            }
+
+            if (imported == 0)
+            {
+                Console.Error.WriteLine(FormattableString.Invariant($"error: 0 of {total} songs imported."));
+            }
+            else if (imported < total)
+            {
+                Console.Error.WriteLine(FormattableString.Invariant(
+                    $"error: {total - imported} of {total} songs failed; the successful songs were kept."));
+            }
+            else
+            {
+                Console.Error.WriteLine(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"error: {result.Failures.Count} of {detection.Containers.Count} inputs failed to extract; the successful songs were kept."));
+            }
+
+            return ImporterCli.ExitFailure;
+        }
+        finally
+        {
+            TryDeleteDirectory(workRoot);
+        }
+    }
+
+    private static string ResolveTargetRoot(string input, string? outRoot, bool isFile)
+    {
+        if (!string.IsNullOrWhiteSpace(outRoot))
+        {
+            return outRoot;
+        }
+
+        var baseDirectory = isFile
+            ? Path.GetDirectoryName(Path.GetFullPath(input)) ?? Directory.GetCurrentDirectory()
+            : input;
+        return Path.Combine(baseDirectory, DefaultOutDirectoryName);
+    }
+
+    /// <summary>
     /// Slugifies a display name into a filesystem-safe song id: Latin diacritics are folded to
     /// ASCII and non-Latin titles (which would otherwise collapse to nothing) fall back to a
     /// deterministic short hash so distinct songs never share a directory.
@@ -275,12 +400,14 @@ internal static class ImportCommand
         string[] args,
         out string directory,
         out string? outRoot,
+        out string? onyxPath,
         out string? error)
     {
         ArgumentNullException.ThrowIfNull(args);
 
         directory = string.Empty;
         outRoot = null;
+        onyxPath = null;
         error = null;
 
         for (var index = 0; index < args.Length; index++)
@@ -295,6 +422,18 @@ internal static class ImportCommand
                 }
 
                 outRoot = args[++index];
+                continue;
+            }
+
+            if (string.Equals(argument, "--onyx", StringComparison.Ordinal))
+            {
+                if (index + 1 >= args.Length)
+                {
+                    error = "--onyx requires a value.";
+                    return false;
+                }
+
+                onyxPath = args[++index];
                 continue;
             }
 
@@ -568,17 +707,12 @@ internal static class ImportCommand
     }
 
     /// <summary>
-    /// Builds the Increment-1 diagnosis for an input the importer cannot read: encrypted
-    /// containers get the "use Onyx" recipe, anything else gets the expected-input list.
+    /// Diagnoses an input the importer cannot read. Encrypted containers are handled by
+    /// <see cref="RunOnyxPreStageAsync"/> before this is reached; this reports unrecognised input.
     /// Continuation lines are pre-indented so the whole block aligns under <c>error: </c>.
     /// </summary>
-    private static string DescribeUnusableInput(string input, DlcDetection detection, bool isFile)
+    private static string DescribeUnusableInput(string input, bool isFile)
     {
-        if (detection.Kind == DlcInputKind.EncryptedContainers && detection.Containers.Count > 0)
-        {
-            return BuildEncryptedContainerMessage(input, detection.Containers, isFile);
-        }
-
         var builder = new StringBuilder();
         builder.Append(isFile
             ? string.Create(
@@ -590,7 +724,7 @@ internal static class ImportCommand
         builder.AppendLine();
         builder.AppendLine("       Expected one of:");
         builder.AppendLine(
-            "         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga stems");
+            "         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga/*.opus stems");
         builder.AppendLine("         - an STFS package (Xbox 360 Rock Band DLC, CON/LIVE/PIRS)");
         builder.AppendLine("         - a PS3 .pkg or encrypted .mid.edat");
         builder.AppendLine("         - a bare .mogg or an unpacked .ARK (MAIN.HDR / main_xbox.hdr / main_ps3.hdr)");
@@ -600,38 +734,23 @@ internal static class ImportCommand
         return builder.ToString();
     }
 
-    private static string BuildEncryptedContainerMessage(
-        string input,
-        IReadOnlyList<DlcContainer> containers,
-        bool isFile)
+    private static void TryDeleteDirectory(string path)
     {
-        var count = containers.Count;
-        var kinds = DlcContainerDetector.FormatKinds(containers);
-
-        var builder = new StringBuilder();
-        var headline = isFile
-            ? string.Create(
-                CultureInfo.InvariantCulture,
-                $"'{input}' is an encrypted Rock Band container ({kinds}).")
-            : string.Create(
-                CultureInfo.InvariantCulture,
-                $"'{input}' contains {count} encrypted Rock Band " +
-                $"{(count == 1 ? "container" : "containers")} ({kinds}).");
-        builder.Append(headline);
-        builder.AppendLine();
-
-        var instruction = count == 1 ? "Convert it" : "Convert them";
-        builder.AppendLine(string.Create(
-            CultureInfo.InvariantCulture,
-            $"       {instruction} with Onyx first (Phase Shift export), then run:"));
-        builder.AppendLine(
-            "         dotnet run --project src/tools/Karaokay.Importer -- " +
-            "import <exported-folder> --out <library>");
-        builder.AppendLine("       Install Onyx: https://github.com/mtolly/onyx/releases");
-        builder.AppendLine("       Automatic extraction lands with the Onyx pre-stage; see");
-        builder.Append("       docs/specs/rb-dlc-onyx-prestage.md and " +
-                      "docs/adr/010-onyx-subprocess-dlc-extraction.md.");
-        return builder.ToString();
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort temp cleanup; the OS temp cleaner is the backstop.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Best-effort temp cleanup.
+        }
     }
 
     private static int Fail(string message)

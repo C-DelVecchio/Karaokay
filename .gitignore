@@ -490,3 +490,6 @@ playwright-report/
 *.mp4
 *.mkv
 *.webm
+
+# Locally installed external tools (e.g. the Onyx AppImage used by the importer spike)
+.tools/
