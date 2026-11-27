@@ -223,8 +223,11 @@ import <path> [--out R] [--onyx P]
                          per-song report + aggregate exit code
 ```
 
-The pre-stage runs **after** argument parsing and path existence checks and **before** the
-`song.ini` validation in `ImportCommand.ExecuteAsync`. Nothing about the baking pipeline moves.
+The pre-stage runs **after** argument parsing and path existence checks, but **only when `song.ini`
+is absent**. A directory that has `song.ini` skips classification entirely and takes the existing
+path with its existing errors, byte for byte — deliberate behaviour preservation, so a hybrid folder
+(`song.ini` plus a stray container) is still handled by the old validation rather than by the
+pre-stage. Nothing about the baking pipeline moves.
 
 ### 4.1 `DlcContainerDetector`
 
@@ -245,11 +248,14 @@ internal enum DlcInputKind
 
 internal sealed record DlcDetection(
     DlcInputKind Kind,
-    IReadOnlyList<DlcContainer> Containers,   // empty unless EncryptedContainers
-    string Detail);                            // e.g. "STFS (CON, Xbox 360)"
+    IReadOnlyList<DlcContainer> Containers);   // empty unless EncryptedContainers
 
 internal sealed record DlcContainer(string Path, DlcContainerFormat Format, bool IsPs3);
 ```
+
+There is deliberately no free-text `Detail` payload on `DlcDetection`: callers build their messages
+from the kind plus the container list (`DescribeCount`/`FormatKinds`), so there is one description
+path rather than a second one that can drift.
 
 **Content sniffing rules** — **content first; filename extensions only as a documented hint** (the
 `.pkg` and `.edat` rows below). A file is only handed to Onyx when the content check passes; an
@@ -285,14 +291,17 @@ invoking Onyx — an extension-only match is not enough.
 1. **Plain wins.** If the directory already has `song.ini` **and** a discoverable MIDI **and** at
    least one instrument stem (the shared probe from §4.6), return `PlainSongFolder` **immediately**,
    even if stray container files also sit there. This is the no-regression guarantee.
-2. Otherwise, enumerate **top-level regular files** (not recursive) and sniff each one; collect
+2. **ARK markers before loose files.** If the directory contains any ARK header file (`MAIN.HDR`,
+   `main_xbox.hdr`, `main_ps3.hdr`, case-insensitive), return a single `EncryptedContainers` entry
+   for the directory and stop. A directory that holds both an ARK marker and loose containers
+   therefore reports **only** the ARK: the marker is a directory-level archive identity, so the
+   directory is the container (§4.1.1).
+3. Otherwise enumerate **top-level regular files** (not recursive) and sniff each one; collect
    recognised containers in ordinal-name order for deterministic messages and test assertions.
-3. If at least one container was recognised → `EncryptedContainers` with all of them (a folder of
+4. If at least one container was recognised → `EncryptedContainers` with all of them (a folder of
    two DLC files, a pack file, and a folder holding one `.pkg` all land here).
-4. Directories identified by an ARK header (`MAIN.HDR`, `main_xbox.hdr`, or `main_ps3.hdr`) are
-   handled as a single container (§4.1.1).
-5. Else → `Unknown`, with `Detail` naming what *was* seen (e.g. `"2 files, none recognised; no
-   song.ini"`) so the error can be specific without guessing.
+5. Else → `Unknown`. There is no detail string to inspect; callers choose the message from the kind
+   (and, for `EncryptedContainers`, the container list).
 
 **File classification (`import <file>`)** — the same sniffer on one file. A file that is not a
 container is `Unknown` and produces the "unrecognized input" message (§6.4); `import` never tries to
@@ -441,7 +450,9 @@ import <dir|file> [--out <outRoot>] [--onyx <path>]
 **Flow.** After the `Directory.Exists` check is generalised into an
 `File.Exists(path) || Directory.Exists(path)` check:
 
-1. **Classify** with `DlcContainerDetector`.
+1. **Branch on `song.ini`.** A directory that has `song.ini` skips classification entirely and runs
+   the existing body unchanged (§4.0). Otherwise — and for any **file** input — **classify** with
+   `DlcContainerDetector` (`ClassifyDirectory`/`ClassifyFile`).
 2. **`PlainSongFolder`** → run the existing body exactly as today (extract it into a private
    `ImportSongFolderAsync(directory, outRoot, ct)` so the multi-song loop can reuse it). No Onyx
    lookup, no behaviour change, no extra output.
@@ -493,6 +504,11 @@ Two parts, both Increment 1:
    The first field stays `Path.GetRelativePath(root, …)` with `.` for the root, matching
    `BuildLine`. Never one line per container: an input is one row.
 
+   **Row order.** Importable song rows print first, in the existing directory-enumeration order.
+   Classified-container rows are buffered and printed afterwards, sorted by relative path — so a
+   mixed root prints its `.` container row last. The scanner passes its already-computed
+   `IsImportable` result into the classifier so a non-song directory is probed once, not twice.
+
 - Track a separate `encrypted` counter, but use it **only** to decide whether the existing
   `no songs found` fallback is suppressed. Current behaviour prints that fallback exactly when
   `found == 0` (`ScanCommand.cs:77-80`); keep the same shape: if `found == 0 && encrypted == 0` →
@@ -511,12 +527,19 @@ Two parts, both Increment 1:
 Slice 1 review item 14 records the duplication: `IsStemFile`, `IsAudioStem`, `HasStemPrefix`,
 `JoinNames`, and the importability criteria are copied across `StemMixer`, `ImportCommand`, and
 `ScanCommand`. The pre-stage makes the divergence actively harmful (three copies of "what is a
-stem" would each need the `.opus` change), so Increment 1 introduces one internal helper. This
+stem" would each need the `.opus` change), so Increment 1 introduces one shared helper. This
 deliberately narrows item 14 to the **stem/importability helpers**; deduplicating `FfmpegGuard` and
 `TryDeleteDirectory` across the test/tool projects stays out of scope.
 
+`ScanCommand` and the importer share one helper, `SongFolderProbe`, which is **public** in
+`src/core/Karaokay.Infrastructure/MediaIngest/SongFolderProbe.cs`. It sits beside the already-public
+`StemMixer` and `MidiFileNameDiscovery` in the same assembly, because `StemMixer` delegates to it
+and both tool commands consume it; making it `internal` would require granting
+`InternalsVisibleTo` from `Karaokay.Infrastructure` to the importer tool, which is the worse
+direction for a general media-ingest rule.
+
 ```csharp
-internal static class SongFolderProbe
+public static class SongFolderProbe
 {
     public static bool IsAudioStemFile(string path);      // Increment 1: .ogg | .oga; Increment 2 adds .opus
     public static bool HasStemPrefix(string path, string prefix);
@@ -677,13 +700,16 @@ error: Onyx did not finish extracting 'media/rb-ingest/Bob Marley and the Wailer
 ```text
 error: 'media/rb-ingest/whatever.txt' is not a song folder and not a container Karaokay recognizes.
        Expected one of:
-         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga/*.opus stems
+         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga stems
          - an STFS package (Xbox 360 Rock Band DLC, CON/LIVE/PIRS)
          - a PS3 .pkg or encrypted .mid.edat
          - a bare .mogg or an unpacked .ARK (MAIN.HDR / main_xbox.hdr / main_ps3.hdr)
        If this is encrypted Rock Band content, decrypt it with Onyx first — see
        docs/specs/rb-dlc-onyx-prestage.md.
 ```
+
+Increment 1 lists `*.ogg`/`*.oga` only, matching what the importer accepts today; `.opus` joins the
+expected-inputs text in Increment 2 together with §4.7.
 
 Empty directory keeps today's phrasing plus the hint (it is `Unknown`, not encrypted):
 
@@ -779,10 +805,16 @@ repeats only the 4-byte magic; it does not copy any further bytes from the user'
 | `plain-ogg.bin` | `OggS` page **without** `mogg` | **not** a container |
 | `short.bin` | 3 bytes | not a container |
 
+The PS3 fixtures are committed as `.bin` so no OS maps them to a handler, but PS3 detection is
+**extension-hinted** (§4.1): each test copies `ps3-pkg.bin` → `*.pkg` and `ps3-edat.bin` →
+`*.mid.edat` before sniffing, and separately asserts that the same bytes under an extensionless
+name are **not** detected.
+
 Directory-level cases: extensionless files (name-only irrelevant, the user's exact shape);
-`:Zone.Identifier` and `._*`/`.DS_Store` ignored; plain folder wins over stray container; empty dir →
-`Unknown`; `.ARK` dir with empty `MAIN.HDR` and a second with lower-case `main_ps3.hdr`; two
-containers → ordinal order; unreadable file → `Unknown`, no throw.
+`:Zone.Identifier` and its dot-mangled `.Zone.Identifier` variant, plus `._*`/`.DS_Store`, ignored;
+plain folder wins over stray container; empty dir → `Unknown`; `.ARK` dir with empty `MAIN.HDR` and a
+second with lower-case `main_ps3.hdr`; two containers → ordinal order; unreadable file → `Unknown`,
+no throw.
 
 ### 7.2 Unit-level — locator, argv, exit codes (fake `onyx`)
 
@@ -878,17 +910,23 @@ Deliverables:
 - `SongFolderProbe` shared importability helper (`.ogg`/`.oga` only), with
   `StemMixer`/`ImportCommand`/`ScanCommand` delegating (§4.6) — no `.opus` acceptance yet, to keep
   this increment a reviewable refactor.
-- `ImportCommand`: accept a file **path** for classification purposes; `Unknown` and
-  `EncryptedContainers` produce the §6.4 / "manual Onyx step" messages. On encrypted input the
-  message names Onyx and the manual recipe, and is explicit that automatic extraction is not in this
-  build:
+- `ImportCommand`: accept a file **path** for classification purposes, but only classify when
+  `song.ini` is absent (§4.0); `Unknown` and `EncryptedContainers` produce the §6.4 / "manual Onyx
+  step" messages. On encrypted input the message names Onyx, the Phase Shift recipe and the runnable
+  command, and is explicit that automatic extraction is not in this build:
 
   ```text
   error: 'media/rb-ingest' contains 2 encrypted Rock Band containers (STFS CON x2).
          Convert them with Onyx first (Phase Shift export), then run:
-           karaokay-importer import <exported-folder> --out <library>
-         Automatic extraction lands with the Onyx pre-stage; see docs/specs/rb-dlc-onyx-prestage.md.
+           dotnet run --project src/tools/Karaokay.Importer -- import <exported-folder> --out <library>
+         Install Onyx: https://github.com/mtolly/onyx/releases
+         Automatic extraction lands with the Onyx pre-stage; see
+         docs/specs/rb-dlc-onyx-prestage.md and docs/adr/010-onyx-subprocess-dlc-extraction.md.
   ```
+
+  A single **file** input uses the natural singular headline instead —
+  `error: '<path>' is an encrypted Rock Band container (STFS CON).` — with the same continuation
+  block.
 
 - `ScanCommand`: classify the scanned root's **own loose files** as well as its directories (§4.5),
   print one `requires Onyx — N encrypted container(s) (…)` line per classified input, track the
