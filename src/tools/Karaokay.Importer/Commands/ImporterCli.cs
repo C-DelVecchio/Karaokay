@@ -64,10 +64,12 @@ internal static class ImporterCli
             Karaokay.Importer — ingest extracted Rock Band song folders.
 
             Usage:
-              scan <root>                        Recursively list importable song folders.
-              import <dir> [--out <outRoot>]     Bake stems and write lyrics.json.
-                                                 Default out root: <dir>/karaokay-out.
-              verify <dir>                       Validate a baked song folder (3 files).
+              scan <root>                          Recursively list importable song folders and
+                                                   encrypted containers (requires Onyx).
+              import <dir|file> [--out <outRoot>]  Bake stems and write lyrics.json.
+                                                   Encrypted Rock Band DLC needs Onyx (manual step).
+                                                   Default out root: <dir>/karaokay-out.
+              verify <dir>                         Validate a baked song folder (3 files).
 
             Exit codes: 0 = success, 1 = failure, 2 = usage error.
             """);

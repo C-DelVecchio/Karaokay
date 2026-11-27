@@ -60,31 +60,14 @@ public static partial class StemMixer
     /// <summary>
     /// Selects the stems that make up the instrumental: every <c>*.ogg</c>/<c>*.oga</c> except
     /// <c>crowd*</c> (audience noise) and <c>vocals*</c> (kept as the guide-vocal stem).
+    /// The rule itself lives in <see cref="SongFolderProbe"/> so the scanner and importer agree.
     /// </summary>
-    public static IReadOnlyList<string> SelectInstrumentalStems(IEnumerable<string> oggFiles)
-    {
-        ArgumentNullException.ThrowIfNull(oggFiles);
-
-        return oggFiles
-            .Where(IsAudioStem)
-            .Where(file => !HasStemPrefix(file, "crowd") && !HasStemPrefix(file, "vocals"))
-            .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
-            .ThenBy(file => file, StringComparer.Ordinal)
-            .ToList();
-    }
+    public static IReadOnlyList<string> SelectInstrumentalStems(IEnumerable<string> oggFiles) =>
+        SongFolderProbe.SelectInstrumentalStems(oggFiles);
 
     /// <summary>Selects only <c>vocals*</c> stems (the guide-vocal track).</summary>
-    public static IReadOnlyList<string> SelectVocalStems(IEnumerable<string> oggFiles)
-    {
-        ArgumentNullException.ThrowIfNull(oggFiles);
-
-        return oggFiles
-            .Where(IsAudioStem)
-            .Where(file => HasStemPrefix(file, "vocals"))
-            .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
-            .ThenBy(file => file, StringComparer.Ordinal)
-            .ToList();
-    }
+    public static IReadOnlyList<string> SelectVocalStems(IEnumerable<string> oggFiles) =>
+        SongFolderProbe.SelectVocalStems(oggFiles);
 
     /// <summary>Builds the FFmpeg filter-complex graph that mixes <paramref name="inputCount"/> stems.</summary>
     public static string BuildInstrumentalFilterGraph(int inputCount)
@@ -444,16 +427,6 @@ public static partial class StemMixer
             Directory.CreateDirectory(directory);
         }
     }
-
-    private static bool IsAudioStem(string file)
-    {
-        var extension = Path.GetExtension(file);
-        return string.Equals(extension, ".ogg", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(extension, ".oga", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool HasStemPrefix(string file, string prefix) =>
-        Path.GetFileName(file).StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
     private static double ReadNumber(JsonElement root, string propertyName, double fallback)
     {

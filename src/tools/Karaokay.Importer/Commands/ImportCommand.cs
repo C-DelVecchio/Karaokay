@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Karaokay.Contracts;
+using Karaokay.Importer.Dlc;
 using Karaokay.Infrastructure.MediaIngest;
 using Melanchall.DryWetMidi.Common;
 using Melanchall.DryWetMidi.Core;
@@ -9,8 +10,10 @@ using Melanchall.DryWetMidi.Core;
 namespace Karaokay.Importer.Commands;
 
 /// <summary>
-/// <c>import &lt;dir&gt; [--out &lt;outRoot&gt;]</c> — ingests one extracted Rock Band folder into the
+/// <c>import &lt;dir|file&gt; [--out &lt;outRoot&gt;]</c> — ingests one extracted Rock Band folder into the
 /// canonical three-file layout: <c>instrumental.opus</c>, <c>vocals.opus</c> and <c>lyrics.json</c>.
+/// A single encrypted container file is accepted as input so it can be diagnosed (Increment 1 of
+/// the Onyx pre-stage; no extraction yet).
 /// </summary>
 internal static class ImportCommand
 {
@@ -28,15 +31,29 @@ internal static class ImportCommand
             return ImporterCli.ExitUsage;
         }
 
-        if (!Directory.Exists(directory))
+        if (!Directory.Exists(directory) && !File.Exists(directory))
         {
             return Fail($"song directory not found: {directory}");
+        }
+
+        // Increment 1 of the Onyx pre-stage: a single container file is a supported *input* (so it
+        // can be diagnosed properly), and a directory without song.ini is classified before the
+        // existing validation. A directory that has song.ini keeps the byte-identical old path.
+        if (File.Exists(directory))
+        {
+            return Fail(DescribeUnusableInput(
+                directory,
+                DlcContainerDetector.ClassifyFile(directory),
+                isFile: true));
         }
 
         var iniPath = Path.Combine(directory, "song.ini");
         if (!File.Exists(iniPath))
         {
-            return Fail($"song.ini not found in: {directory}");
+            return Fail(DescribeUnusableInput(
+                directory,
+                DlcContainerDetector.ClassifyDirectory(directory),
+                isFile: false));
         }
 
         SongIni ini;
@@ -103,7 +120,7 @@ internal static class ImportCommand
         try
         {
             stems = Directory.EnumerateFiles(directory)
-                .Where(IsStemFile)
+                .Where(SongFolderProbe.IsAudioStemFile)
                 .ToList();
         }
         catch (IOException exception)
@@ -289,7 +306,7 @@ internal static class ImportCommand
 
             if (directory.Length > 0)
             {
-                error = "import expects exactly one song directory.";
+                error = "import expects exactly one song directory or container file.";
                 return false;
             }
 
@@ -298,7 +315,7 @@ internal static class ImportCommand
 
         if (directory.Length == 0)
         {
-            error = "import expects a song directory.";
+            error = "import expects a song directory or container file.";
             return false;
         }
 
@@ -509,13 +526,6 @@ internal static class ImportCommand
     private static string JoinNames(IReadOnlyList<string> files) =>
         string.Join(", ", files.Select(Path.GetFileName));
 
-    private static bool IsStemFile(string file)
-    {
-        var extension = Path.GetExtension(file);
-        return string.Equals(extension, ".ogg", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(extension, ".oga", StringComparison.OrdinalIgnoreCase);
-    }
-
     private static bool IsSafeDirectoryName(string value) =>
         value is not ("." or "..")
         && value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
@@ -555,6 +565,73 @@ internal static class ImportCommand
         {
             // Best-effort cleanup of a partially written temp file.
         }
+    }
+
+    /// <summary>
+    /// Builds the Increment-1 diagnosis for an input the importer cannot read: encrypted
+    /// containers get the "use Onyx" recipe, anything else gets the expected-input list.
+    /// Continuation lines are pre-indented so the whole block aligns under <c>error: </c>.
+    /// </summary>
+    private static string DescribeUnusableInput(string input, DlcDetection detection, bool isFile)
+    {
+        if (detection.Kind == DlcInputKind.EncryptedContainers && detection.Containers.Count > 0)
+        {
+            return BuildEncryptedContainerMessage(input, detection.Containers, isFile);
+        }
+
+        var builder = new StringBuilder();
+        builder.Append(isFile
+            ? string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{input}' is not a song folder and not a container Karaokay recognizes.")
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"no song folder or encrypted Rock Band container found in: {input}"));
+        builder.AppendLine();
+        builder.AppendLine("       Expected one of:");
+        builder.AppendLine(
+            "         - an extracted song folder: song.ini + notes.mid (or song.mid) + *.ogg/*.oga stems");
+        builder.AppendLine("         - an STFS package (Xbox 360 Rock Band DLC, CON/LIVE/PIRS)");
+        builder.AppendLine("         - a PS3 .pkg or encrypted .mid.edat");
+        builder.AppendLine("         - a bare .mogg or an unpacked .ARK (MAIN.HDR / main_xbox.hdr / main_ps3.hdr)");
+        builder.Append("       If this is encrypted Rock Band content, decrypt it with Onyx first — see");
+        builder.AppendLine();
+        builder.Append("       docs/specs/rb-dlc-onyx-prestage.md.");
+        return builder.ToString();
+    }
+
+    private static string BuildEncryptedContainerMessage(
+        string input,
+        IReadOnlyList<DlcContainer> containers,
+        bool isFile)
+    {
+        var count = containers.Count;
+        var kinds = DlcContainerDetector.FormatKinds(containers);
+
+        var builder = new StringBuilder();
+        var headline = isFile
+            ? string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{input}' is an encrypted Rock Band container ({kinds}).")
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{input}' contains {count} encrypted Rock Band " +
+                $"{(count == 1 ? "container" : "containers")} ({kinds}).");
+        builder.Append(headline);
+        builder.AppendLine();
+
+        var instruction = count == 1 ? "Convert it" : "Convert them";
+        builder.AppendLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"       {instruction} with Onyx first (Phase Shift export), then run:"));
+        builder.AppendLine(
+            "         dotnet run --project src/tools/Karaokay.Importer -- " +
+            "import <exported-folder> --out <library>");
+        builder.AppendLine("       Install Onyx: https://github.com/mtolly/onyx/releases");
+        builder.AppendLine("       Automatic extraction lands with the Onyx pre-stage; see");
+        builder.Append("       docs/specs/rb-dlc-onyx-prestage.md and " +
+                      "docs/adr/010-onyx-subprocess-dlc-extraction.md.");
+        return builder.ToString();
     }
 
     private static int Fail(string message)
